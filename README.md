@@ -24,13 +24,20 @@ The first run of a tree executes every covered mutant. Start with the file you a
 ./mutator --no-coverage             # do not skip uncovered lines
 ./mutator --use-existing-coverage   # read reports already on disk
 ./mutator --test-command "pytest -q tests/test_demo.py"
+./mutator --max-workers 3 src/demo/core.clj
 ```
 
 Once a snapshot exists, the next run is differential. It reruns survivors and every site in a function whose text changed. Killed mutants in an unchanged function stay killed. `--since-last-run` is that same selection. `--mutate-all` ignores it.
 
 Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail. Exit `3` when a mutant survives. A failed baseline does not rewrite the snapshot.
 
-Mutants run one at a time in the project tree. The original file is restored after each one. An interrupted run leaves a copy under `target/mutator-backup/`, and the next run puts it back before reading source.
+## Workers
+
+Mutants of one file run at the same time. The default is one worker per core. `--max-workers` sets the cap. The run uses the smaller of that cap, the number of cores, and the number of selected sites. Files are still taken one at a time.
+
+Each worker is a directory under `target/mutation-workers`. It is a symlink overlay of the project: the file being mutated is a private copy, and the rest of the tree is linked. The original files stay as they are. The overlay is removed when that file's mutants finish.
+
+The baseline still runs once, in the real tree, before any worker starts. The mutant command then runs inside the worker, in the same directory it would have used in the real tree, so a relative path such as `src` or `./pkg` refers to the overlay. A copy left under `target/mutator-backup/` by an interrupted older run is restored before a non-scan run.
 
 ## Snapshot
 

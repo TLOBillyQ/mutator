@@ -11,7 +11,7 @@ from mutator.metrics import load_history, source_key, write_results
 from mutator.model import FormResult, RunResult, Site
 from mutator.report import format_scan
 from mutator.runner import CommandRunner, test_plan
-from mutator.sites import apply_site
+from mutator.workers import run_mutants
 
 
 def restore_backups(root: Path) -> list[Path]:
@@ -148,23 +148,6 @@ def _forms(
     return forms
 
 
-def _run_mutant(path: Path, root: Path, original: bytes, site: Site, run) -> str:
-    current = original[site.start : site.end].decode("utf-8")
-    if current != site.original:
-        print(f"Skipped {path}:{site.line} {site.description}; source bytes moved", file=sys.stderr)
-        return "survived"
-    backup = _backup(root, path, original)
-    mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
-    path.write_text(mutated, encoding="utf-8")
-    _drop_bytecode(path)
-    try:
-        return run()
-    finally:
-        path.write_bytes(original)
-        if path.read_bytes() == original and backup.is_file():
-            backup.unlink()
-
-
 def _decode(path: Path) -> tuple[bytes, str] | None:
     original = path.read_bytes()
     try:
@@ -215,26 +198,6 @@ def _baseline_failure(file_key: str, command: str, tail: str) -> RunResult:
     return RunResult(path=file_key, forms=[], written=[], baseline_failed=True, baseline_message=message)
 
 
-def _mutant_status(runner, command: str, cwd: Path, timeout: float) -> str:
-    result = runner.run(command, cwd, timeout)
-    if result.timed_out or result.code != 0:
-        return "killed"
-    return "survived"
-
-
-def _run_selected(path, root, original, selected, runner, command, cwd, timeout, file_key, outcomes) -> None:
-    for site in selected:
-        if runner.verbose:
-            print(f"{file_key}:{site.line} {site.description}", file=sys.stderr)
-        outcomes[site.mutation_id] = _run_mutant(
-            path,
-            root,
-            original,
-            site,
-            lambda: _mutant_status(runner, command, cwd, timeout),
-        )
-
-
 def _apply_selected(
     path,
     root,
@@ -247,6 +210,7 @@ def _apply_selected(
     file_key,
     baselines,
     outcomes,
+    max_workers,
 ) -> RunResult | None:
     if not selected:
         return None
@@ -257,7 +221,19 @@ def _apply_selected(
     if not ok:
         return _baseline_failure(file_key, command, tail)
     timeout = max(2.0, seconds * timeout_factor)
-    _run_selected(path, root, original, selected, runner, command, cwd, timeout, file_key, outcomes)
+    run_mutants(
+        root,
+        path,
+        original,
+        selected,
+        max_workers,
+        runner,
+        command,
+        cwd,
+        timeout,
+        file_key,
+        outcomes,
+    )
     return None
 
 
@@ -289,6 +265,7 @@ def mutate_file(
     timeout_factor: float,
     mutation_warning: int,
     baselines: dict[tuple[str, str], tuple[bool, float, str]],
+    max_workers: int | None = None,
 ) -> RunResult:
     """Mutate one file and write its namespaces into `.metrics/mutate`."""
 
@@ -323,6 +300,7 @@ def mutate_file(
         file_key,
         baselines,
         outcomes,
+        max_workers,
     )
     if failure is not None:
         return failure

@@ -19,6 +19,46 @@ class CommandResult:
     output: str
 
 
+def _worker_home(cwd: Path) -> Path | None:
+    """The overlay root when cwd is inside target/mutation-workers."""
+
+    for candidate in [cwd, *cwd.parents]:
+        parent = candidate.parent
+        if not candidate.name.startswith("worker-"):
+            continue
+        if not parent.name.startswith("run-"):
+            continue
+        if parent.parent.name == "mutation-workers":
+            return candidate
+    return None
+
+
+def _source_entries(cwd: Path, worker: Path) -> list[str]:
+    found = []
+    for directory in (cwd / "src", cwd, worker / "src", worker):
+        text = str(directory)
+        if text in found:
+            continue
+        if directory.is_dir():
+            found.append(text)
+    return found
+
+
+def _prefer_worker_sources(cwd: Path, environment: dict) -> None:
+    """An editable install would otherwise import the unmutated tree."""
+
+    worker = _worker_home(cwd)
+    if worker is None:
+        return
+    entries = _source_entries(cwd, worker)
+    current = environment.get("PYTHONPATH")
+    if current:
+        entries.append(current)
+    if not entries:
+        return
+    environment["PYTHONPATH"] = os.pathsep.join(entries)
+
+
 class CommandRunner:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -29,6 +69,7 @@ class CommandRunner:
         started = time.monotonic()
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        _prefer_worker_sources(cwd, environment)
         process = subprocess.Popen(
             command,
             cwd=cwd,

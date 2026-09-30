@@ -1,16 +1,22 @@
+import os
+import threading
+
 from mutator.engine import mutate_file, restore_backups
 from mutator.edn import loads
 from mutator.metrics import snapshot_path
 from mutator.runner import CommandResult
+from mutator.workers import create_workers, delete_tree, new_run_dir, worker_count
 
 
 class FakeRunner:
     def __init__(self):
         self.verbose = False
         self.calls = 0
+        self._lock = threading.Lock()
 
     def run(self, command, cwd, timeout):
-        self.calls += 1
+        with self._lock:
+            self.calls += 1
         text = (cwd / "src" / "demo.py").read_text(encoding="utf-8")
         namespace: dict = {}
         exec(text, namespace)
@@ -131,6 +137,84 @@ def test_a_failed_baseline_does_not_rewrite_metrics(tmp_path):
     )
     assert result.baseline_failed
     assert not snapshot_path(tmp_path, "demo").exists()
+
+
+def test_worker_count_follows_sites_cores_and_the_requested_cap():
+    cores = os.cpu_count() or 1
+    assert worker_count(10, None) == min(10, cores)
+    assert worker_count(10, 3) == min(3, cores)
+    assert worker_count(2, 8) == min(2, cores)
+
+
+def test_workers_keep_a_private_copy_and_link_the_rest(tmp_path):
+    source = tmp_path / "src" / "demo.py"
+    source.parent.mkdir()
+    source.write_text("def place(x):\n    return x > 0\n", encoding="utf-8")
+    sibling = tmp_path / "src" / "other.py"
+    sibling.write_text("kept = True\n", encoding="utf-8")
+    marker = tmp_path / "tests" / "keep.txt"
+    marker.parent.mkdir()
+    marker.write_text("keep", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    original = source.read_bytes()
+
+    base = new_run_dir(tmp_path)
+    try:
+        workers = create_workers(base, tmp_path, "src/demo.py", original, 2)
+        assert len(workers) == 2
+        for worker in workers:
+            private = worker / "src" / "demo.py"
+            assert private.is_file()
+            assert not private.is_symlink()
+            assert private.read_bytes() == original
+            assert (worker / "src" / "other.py").is_symlink()
+            assert (worker / "tests").is_symlink()
+            assert (worker / "tests" / "keep.txt").read_text(encoding="utf-8") == "keep"
+            assert (worker / "pyproject.toml").is_file()
+            assert not (worker / "pyproject.toml").is_symlink()
+        (workers[0] / "src" / "demo.py").write_text("changed\n", encoding="utf-8")
+        assert workers[1].joinpath("src/demo.py").read_bytes() == original
+        assert source.read_bytes() == original
+    finally:
+        delete_tree(base)
+
+    assert source.read_bytes() == original
+    assert sibling.read_text(encoding="utf-8") == "kept = True\n"
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert not base.exists()
+
+
+def test_a_mutation_run_leaves_the_project_tree_unchanged(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def place(x):\n    return x > 0\n", encoding="utf-8")
+    original = path.read_text(encoding="utf-8")
+
+    class Record:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            if timeout is not None:
+                assert "mutation-workers" in cwd.as_posix()
+                assert (cwd / "src" / "demo.py").read_text(encoding="utf-8") != original
+            return CommandResult(code=0 if timeout is None else 1, timed_out=False, seconds=0.01, output="")
+
+    mutate_file(
+        path,
+        tmp_path,
+        runner=Record(),
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        max_workers=2,
+    )
+    assert path.read_text(encoding="utf-8") == original
+    assert [item for item in (tmp_path / "target").rglob("*") if item.is_file()] == []
 
 
 def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):

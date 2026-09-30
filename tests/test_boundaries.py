@@ -7,6 +7,7 @@ alone when no input can tell the operators apart.
 
 import hashlib
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -119,9 +120,11 @@ class _Ok:
         self.verbose = False
         self.seconds = seconds
         self.timeouts = []
+        self._lock = threading.Lock()
 
     def run(self, command, cwd, timeout):
-        self.timeouts.append(timeout)
+        with self._lock:
+            self.timeouts.append(timeout)
         code = 0 if timeout is None else 1
         return CommandResult(code=code, timed_out=False, seconds=self.seconds, output="")
 
@@ -369,6 +372,10 @@ def test_options_reject_bad_values_and_keep_flag_defaults(monkeypatch):
     assert parse_args(["--reuse-coverage"]).use_existing_coverage is True
     assert parse_args(["--verbose"]).verbose is True
     assert parse_args(["--changed"]).changed is True
+    assert parse_args(["--max-workers", "2"]).max_workers == 2
+    assert parse_args(["--max-workers", "0"]).exit_code == 1
+    assert parse_args(["--max-workers", "nope"]).exit_code == 1
+    assert parse_args(["--scan", "--max-workers", "2"]).exit_code == 1
     assert parse_args(["--not-a-flag"]).exit_code == 1
     monkeypatch.setattr(sys, "argv", ["prog", "--verbose"])
     options = parse_args(None)
@@ -685,9 +692,11 @@ def test_mutate_all_reruns_a_killed_mutant_and_clears_its_backup(tmp_path):
         def __init__(self):
             self.verbose = False
             self.calls = 0
+            self._lock = threading.Lock()
 
         def run(self, command, cwd, timeout):
-            self.calls += 1
+            with self._lock:
+                self.calls += 1
             text = (cwd / "src" / "demo.py").read_text(encoding="utf-8")
             namespace: dict = {}
             exec(text, namespace)

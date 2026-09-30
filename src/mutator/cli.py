@@ -55,6 +55,10 @@ Options:
                                 2 seconds.
   --mutation-warning <number>   Warn when a file selects more covered sites
                                 than this. Default: 50.
+  --max-workers <number>        Run at most this many mutants of one file at
+                                once. Default: one per core. The run uses the
+                                smaller of this limit, the cores, and the
+                                number of selected sites.
   --verbose                     Print each test command and each mutant.
 
 Arguments:
@@ -67,6 +71,12 @@ named test, tests, spec, specs, vendor, node_modules, and target are skipped.
 
 The default, once a snapshot exists, reruns survivors and sites in functions
 whose text changed. Killed mutants in unchanged functions are kept.
+
+Selected mutants of one file run at the same time, one worker per core unless
+--max-workers says otherwise. A worker is a symlink overlay under
+target/mutation-workers with its own copy of the mutated file. The project
+tree is left unchanged. A copy left under target/mutator-backup/ by an
+interrupted older run is restored before a non-scan run.
 
 Exit codes:
   0  every executed mutant was killed, or there was nothing to run
@@ -104,6 +114,7 @@ class Options:
     test_command: str | None = None
     timeout_factor: float = 10.0
     mutation_warning: int = 50
+    max_workers: int | None = None
     changed: bool = False
     verbose: bool = False
 
@@ -112,6 +123,16 @@ def _take(args: list[str], index: int, option: str) -> str:
     if index + 1 >= len(args) or not args[index + 1] or args[index + 1].startswith("-"):
         raise ValueError(f"{option} requires a value")
     return args[index + 1]
+
+
+def _workers(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError:
+        raise ValueError("--max-workers requires a positive integer") from None
+    if count < 1:
+        raise ValueError("--max-workers requires a positive integer")
+    return count
 
 
 def _lines(value: str) -> set[int]:
@@ -162,6 +183,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 continue
             if arg == "--mutation-warning":
                 options.mutation_warning = int(_take(args, index, arg))
+                index += 2
+                continue
+            if arg == "--max-workers":
+                options.max_workers = _workers(_take(args, index, arg))
                 index += 2
                 continue
             if arg == "--lines":
@@ -218,6 +243,12 @@ def parse_args(argv: list[str] | None = None) -> Options:
         return Options(
             action="help",
             message=f"--scan cannot be combined with --mutate-all\n\n{HELP}",
+            exit_code=1,
+        )
+    if options.scan and options.max_workers is not None:
+        return Options(
+            action="help",
+            message=f"--scan cannot be combined with --max-workers\n\n{HELP}",
             exit_code=1,
         )
     return options
@@ -424,6 +455,7 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             timeout_factor=options.timeout_factor,
             mutation_warning=options.mutation_warning,
             baselines=baselines,
+            max_workers=options.max_workers,
         )
         outcome = _record(result, forms, written)
         if outcome == "baseline":

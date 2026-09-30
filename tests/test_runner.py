@@ -1,4 +1,6 @@
-from mutator.runner import _clojure_command, _python_command, nearest
+import sys
+
+from mutator.runner import CommandRunner, _clojure_command, _python_command, nearest
 
 
 def test_nearest_walks_up_to_the_marker(tmp_path):
@@ -66,3 +68,13 @@ def test_python_commands(tmp_path):
     conf.mkdir()
     (conf / "conftest.py").write_text("", encoding="utf-8")
     assert _python_command(conf).endswith("-m pytest")
+
+
+def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
+    worker = tmp_path / "target" / "mutation-workers" / "run-1" / "worker-0"
+    (worker / "src").mkdir(parents=True)
+    (worker / "src" / "demo.py").write_text("VALUE = 'worker'\n", encoding="utf-8")
+    command = f"{sys.executable} -c 'import demo; print(demo.VALUE)'"
+    result = CommandRunner().run(command, worker, 5)
+    assert result.code == 0
+    assert result.output.strip() == "worker"
