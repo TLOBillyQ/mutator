@@ -1,0 +1,147 @@
+from mutator.engine import mutate_file, restore_backups
+from mutator.edn import loads
+from mutator.metrics import snapshot_path
+from mutator.runner import CommandResult
+
+
+class FakeRunner:
+    def __init__(self):
+        self.verbose = False
+        self.calls = 0
+
+    def run(self, command, cwd, timeout):
+        self.calls += 1
+        text = (cwd / "src" / "demo.py").read_text(encoding="utf-8")
+        namespace: dict = {}
+        exec(text, namespace)
+        ok = namespace["add"](1, 2) == 3
+        return CommandResult(code=0 if ok else 1, timed_out=False, seconds=0.01, output="")
+
+
+SOURCE = """def add(a, b):
+    if a > 0:
+        return a + b
+    return a + b
+"""
+
+
+def test_mutants_are_killed_or_kept_and_the_snapshot_is_differential(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+    original = path.read_bytes()
+    runner = FakeRunner()
+    first = mutate_file(
+        path,
+        tmp_path,
+        runner=runner,
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+    )
+    assert path.read_bytes() == original
+    assert first.baseline_failed is False
+    form = first.forms[0]
+    assert form.id == "defn/add"
+    assert form.namespace == "demo"
+    # `>` and the unexecuted `+` survive. The executed `+` is killed. `0` -> `1`
+    # still returns 3 for add(1, 2).
+    assert form.killed == 1
+    assert form.survived == 3
+    assert form.sites == 4
+    assert form.killed + form.survived + form.uncovered == form.sites
+    data = loads(snapshot_path(tmp_path, "demo").read_text(encoding="utf-8"))
+    assert data["namespace"] == "demo"
+    assert data["forms"][0]["id"] == "defn/add"
+    assert data["forms"][0]["killed"] == 1
+    assert data["forms"][0]["survived"] == 3
+    first_calls = runner.calls
+
+    second = mutate_file(
+        path,
+        tmp_path,
+        runner=runner,
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=False,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+    )
+    assert second.forms[0].killed == 1
+    assert second.forms[0].survived == 3
+    # Baseline plus the three survivors. The killed mutant stays in the snapshot.
+    assert runner.calls - first_calls == 4
+
+
+def test_uncovered_sites_are_not_executed(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+    runner = FakeRunner()
+    result = mutate_file(
+        path,
+        tmp_path,
+        runner=runner,
+        covered_lines=set(),
+        ignore_coverage=False,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+    )
+    assert runner.calls == 0
+    assert result.forms[0].uncovered == 4
+    assert result.forms[0].killed == 0
+    assert result.forms[0].sites == 4
+
+
+def test_a_failed_baseline_does_not_rewrite_metrics(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+
+    class Red:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            return CommandResult(code=1, timed_out=False, seconds=0.01, output="nope")
+
+    result = mutate_file(
+        path,
+        tmp_path,
+        runner=Red(),
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+    )
+    assert result.baseline_failed
+    assert not snapshot_path(tmp_path, "demo").exists()
+
+
+def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):
+    source = tmp_path / "src" / "demo.py"
+    source.parent.mkdir()
+    source.write_text("original\n", encoding="utf-8")
+    backup = tmp_path / "target" / "mutator-backup" / "src" / "demo.py"
+    backup.parent.mkdir(parents=True)
+    backup.write_text("original\n", encoding="utf-8")
+    source.write_text("mutated\n", encoding="utf-8")
+    restored = restore_backups(tmp_path)
+    assert restored == [source]
+    assert source.read_text(encoding="utf-8") == "original\n"
+    assert not backup.exists()
