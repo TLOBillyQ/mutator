@@ -110,7 +110,7 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | Go | `go test -count=1` of the file's package | nearest `go.mod` |
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
-| Python | `python -m pytest`, or `unittest discover` | nearest project file |
+| Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 

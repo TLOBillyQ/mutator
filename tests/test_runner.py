@@ -44,6 +44,51 @@ def test_clojure_commands(tmp_path):
     assert _clojure_command(plain) == "clj -M:test"
 
 
+def _executable(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_python_command_uses_an_absolute_project_interpreter(tmp_path):
+    project = tmp_path / "proj"
+    dot = project / ".venv" / "bin" / "python"
+    _executable(dot)
+    (project / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    assert _python_command(project) == f"{dot.absolute()} -m pytest"
+
+    other = tmp_path / "other"
+    plain = other / "venv" / "bin" / "python"
+    _executable(plain)
+    assert _python_command(other) == f"{plain.absolute()} -m unittest discover"
+
+    _executable(other / ".venv" / "bin" / "python")
+    assert _python_command(other) == f"{(other / '.venv' / 'bin' / 'python').absolute()} -m unittest discover"
+
+
+def test_python_command_keeps_the_virtualenv_symlink(tmp_path):
+    project = tmp_path / "proj"
+    target = project / "real-python"
+    _executable(target)
+    link = project / ".venv" / "bin" / "python"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target)
+    (project / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    assert _python_command(project) == f"{link.absolute()} -m pytest"
+
+
+def test_python_command_falls_back_when_the_virtualenv_cannot_run(tmp_path):
+    project = tmp_path / "proj"
+    binary = project / ".venv" / "bin" / "python"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    assert _python_command(project) == f"{sys.executable} -m unittest discover"
+
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    assert _python_command(missing) == f"{sys.executable} -m unittest discover"
+
+
 def test_python_commands(tmp_path):
     pytest_dir = tmp_path / "py"
     pytest_dir.mkdir()

@@ -128,7 +128,22 @@ def _clojure_command(directory: Path) -> str:
     return "clj -M:test"
 
 
+def _project_interpreter(directory: Path) -> str:
+    """The project's virtualenv, or this process when the project has none.
+
+    The path stays absolute and the symlink is left in place. A worker does
+    not link ``.venv``, and resolving ``bin/python`` would leave the virtualenv.
+    """
+
+    for name in (".venv", "venv"):
+        candidate = (directory / name / "bin" / "python").absolute()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return sys.executable
+
+
 def _python_command(directory: Path) -> str:
+    interpreter = _project_interpreter(directory)
     pyproject = _read(directory / "pyproject.toml")
     if (
         (directory / "pytest.ini").is_file()
@@ -136,8 +151,8 @@ def _python_command(directory: Path) -> str:
         or "pytest" in pyproject
         or (directory / "setup.cfg").is_file() and "pytest" in _read(directory / "setup.cfg")
     ):
-        return f"{sys.executable} -m pytest"
-    return f"{sys.executable} -m unittest discover"
+        return f"{interpreter} -m pytest"
+    return f"{interpreter} -m unittest discover"
 
 
 def test_plan(root: Path, source: Path, language: str, override: str | None) -> tuple[str, Path]:
