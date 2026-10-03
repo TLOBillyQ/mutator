@@ -68,6 +68,8 @@ CONFIGS = (
     "requirements.txt",
     "Pipfile",
     "poetry.lock",
+    ".busted",
+    ".luacov",
 )
 
 

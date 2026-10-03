@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from mutator.crapper_link import ensure_crapper
 
 
 @dataclass(frozen=True)
@@ -186,4 +189,15 @@ def test_plan(root: Path, source: Path, language: str, override: str | None) -> 
             or root
         )
         return _python_command(directory), directory
+    if language == "lua":
+        return _lua_plan(root, source)
     return "false", root
+
+
+def _lua_plan(root: Path, source: Path) -> tuple[str, Path]:
+    """busted in the nearest `.busted` or rockspec directory, on Lua 5.4."""
+
+    runners = ensure_crapper().runners
+    directory = runners.lua_roots(root, [source])[0]
+    lua = runners.lua_interpreter() or "lua5.4"
+    return f"busted --lua={shlex.quote(lua)}", directory

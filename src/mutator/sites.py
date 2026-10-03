@@ -2,7 +2,8 @@
 
 Clojure follows clj-mutate's symbol rules. Go follows mutate4go, including
 one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, and Python
-use the same decisions as Java, spelled in that language.
+use the same decisions as Java, spelled in that language. Lua spells
+inequality `~=`, mutates `//` one way to `/`, and leaves `..` and `#` alone.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ _BINARY = {
     "and": "or",
     "or": "and",
 }
+
+_LUA_BINARY = {**_BINARY, "==": "~=", "~=": "==", "//": "/"}
 
 _BINARY_PARENTS = {
     "binary_expression",
@@ -116,7 +119,7 @@ def _category(token: str) -> str:
         return "arithmetic"
     if token in {">", ">=", "<", "<="}:
         return "comparison"
-    if token in {"==", "!=", "===", "!=="}:
+    if token in {"==", "!=", "===", "!==", "~="}:
         return "equality"
     if token in {"&&", "||", "and", "or"}:
         return "logical"
@@ -126,6 +129,8 @@ def _category(token: str) -> str:
 def _binary_mutant(language: str, token: str) -> str | None:
     if language == "go" and token == "/":
         return None
+    if language == "lua":
+        return _LUA_BINARY.get(token)
     return _BINARY.get(token)
 
 
