@@ -117,6 +117,27 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
+## Windows
+
+mutator runs on Windows through WSL2 with Ubuntu. Native Windows is not supported.
+
+1. In an administrator PowerShell, run `wsl --install` and reboot.
+2. Open Ubuntu and clone into the Linux home directory, not `/mnt/c`.
+   Windows drives are slow under WSL2 and break symlinks:
+
+   ```bash
+   cd ~
+   git clone -b lua https://github.com/TLOBillyQ/crapper.git
+   git clone -b lua https://github.com/TLOBillyQ/mutator.git
+   ```
+
+3. Run `mutator/scripts/setup-ubuntu.sh`. It installs Python, Lua 5.4,
+   busted, luacov, and luacov-reporter-lcov, then creates `.venv`.
+4. Edit in VS Code with the WSL extension (`code .` from Ubuntu).
+
+mutator warns at startup when it runs on native Windows or on a project
+under `/mnt/`.
+
 ## Development
 
 ```bash

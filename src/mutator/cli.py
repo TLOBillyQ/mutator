@@ -470,6 +470,19 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
     return _finish(baseline_failed, survived)
 
 
+def platform_warning(platform: str, root: Path) -> str | None:
+    """Windows runs mutator inside WSL2, with the project in the Linux filesystem."""
+
+    if platform == "win32":
+        return "Native Windows is not supported. Run mutator inside WSL2; see the README."
+    if root.as_posix().startswith("/mnt/"):
+        return (
+            f"{root} is on a Windows drive. Under WSL2, clone the project under ~/ "
+            "for speed and working symlinks."
+        )
+    return None
+
+
 def run(argv: list[str] | None = None) -> int:
     options = parse_args(argv)
     if options.action == "help":
@@ -479,6 +492,9 @@ def run(argv: list[str] | None = None) -> int:
         print(missing, file=sys.stderr)
         return 2
     root = options.project_root.resolve()
+    warning = platform_warning(sys.platform, root)
+    if warning:
+        print(warning, file=sys.stderr)
     files = select_files(options)
     if not files:
         print("No source files to mutate.")
