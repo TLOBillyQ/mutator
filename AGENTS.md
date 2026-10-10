@@ -13,3 +13,7 @@ Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Parallel worktrees
+
+Working in a `git worktree` (parallel subagents): per-worktree venv, crapper sibling, PYTHONPATH pinning. See `docs/agents/worktrees.md`.

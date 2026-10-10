@@ -13,6 +13,10 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
+## Closing issues via PRs
+
+This fork's PRs target the `lua` branch, not the default branch. `Closes #N` keywords only auto-close on merge to the default branch, so after merging a PR into `lua`, close the linked issues manually: `gh issue close <n> --comment "Fixed by PR #<pr>"`.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_

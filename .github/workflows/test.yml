@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+    branches: [main, lua]
+  pull_request:
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: mutator
+      - uses: actions/checkout@v6
+        with:
+          repository: unclebob/crapper
+          path: crapper
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e "./mutator[dev]"
+      - run: python -m pytest
+        working-directory: mutator
