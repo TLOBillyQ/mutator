@@ -143,6 +143,14 @@ mutator runs on Windows through WSL2 with Ubuntu. Native Windows is not supporte
 mutator warns at startup when it runs on native Windows or on a project
 under `/mnt/`.
 
+Native Windows process cleanup differs from POSIX in two ways. A timed-out
+test command is killed through a kill-on-close Job Object, so descendants
+still alive when the runner exits are killed even after a successful run —
+POSIX leaves them alone. And if a timed-out shell has already exited,
+descendants that broke away from the Job (the venv `python.exe` redirector
+re-executes the real interpreter outside it) escape both `taskkill`'s tree
+walk and the Job, so they can outlive the timeout.
+
 ## Development
 
 ```bash
