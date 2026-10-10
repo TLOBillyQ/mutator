@@ -115,6 +115,11 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
 | Lua | `busted --lua=<lua5.4>`, the interpreter crapper finds (`lua5.4`, then `lua`) | nearest `.busted` or rockspec |
 
+Built-in plans run as argument vectors without a shell, so an interpreter
+path with spaces stays one argument. The busted `--lua` interpreter must be
+a real executable; a `.bat`/`.cmd` wrapper cannot be launched this way.
+A `--test-command` you supply still runs through the shell as typed.
+
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
 ## Windows

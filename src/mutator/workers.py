@@ -18,6 +18,7 @@ from queue import Empty, Queue
 from threading import Lock
 
 from mutator.model import Site
+from mutator.runner import Command
 from mutator.sites import apply_site
 
 # Build output and the worker tree itself must not be shared. A link to
@@ -301,7 +302,7 @@ def _execute(
     relative: str,
     original: bytes,
     runner,
-    command: str,
+    command: Command,
     cwd: Path,
     timeout: float,
     file_key: str,
@@ -334,7 +335,7 @@ def _drain(
     relative: str,
     original: bytes,
     runner,
-    command: str,
+    command: Command,
     cwd: Path,
     timeout: float,
     file_key: str,
@@ -375,7 +376,7 @@ def _run_all(
     relative: str,
     original: bytes,
     runner,
-    command: str,
+    command: Command,
     cwd: Path,
     timeout: float,
     file_key: str,
@@ -414,7 +415,7 @@ def run_mutants(
     sites: list[Site],
     max_workers: int | None,
     runner,
-    command: str,
+    command: Command,
     cwd: Path,
     timeout: float,
     file_key: str,
