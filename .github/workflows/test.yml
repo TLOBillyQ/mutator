@@ -18,7 +18,8 @@ jobs:
           path: mutator
       - uses: actions/checkout@v6
         with:
-          repository: unclebob/crapper
+          repository: TLOBillyQ/crapper
+          ref: lua
           path: crapper
       - uses: actions/setup-python@v6
         with:
