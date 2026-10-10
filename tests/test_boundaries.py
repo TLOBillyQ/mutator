@@ -284,7 +284,7 @@ def test_commands_follow_the_nearest_project_and_a_killed_process(tmp_path):
     both.mkdir()
     (both / "bb.edn").write_text("{:tasks {test (clojure)}}\n", encoding="utf-8")
     (both / "deps.edn").write_text("{:deps {}}\n", encoding="utf-8")
-    assert _clojure_command(both) == "clj -M:test"
+    assert _clojure_command(both) == ["clj", "-M:test"]
 
     root = tmp_path / "proj"
     sub = root / "svc"
@@ -295,28 +295,28 @@ def test_commands_follow_the_nearest_project_and_a_killed_process(tmp_path):
     clojure.write_text("(defn place [] 1)\n", encoding="utf-8")
     command, directory = command_for(root, clojure, "clojure", None)
     assert directory == sub
-    assert command == "bb test"
+    assert command == ["bb", "test"]
 
     (sub / "pom.xml").write_text("<project/>\n", encoding="utf-8")
     java = sub / "src" / "A.java"
     java.write_text("class A { int place(){ return 1; } }\n", encoding="utf-8")
     command, directory = command_for(root, java, "java", None)
     assert directory == sub
-    assert command == "mvn -q test -DexcludeTags=no-mutate"
+    assert command == ["mvn", "-q", "test", "-DexcludeTags=no-mutate"]
 
     (sub / "package.json").write_text("{}\n", encoding="utf-8")
     typescript = sub / "src" / "a.ts"
     typescript.write_text("export function place(){ return 1; }\n", encoding="utf-8")
     command, directory = command_for(root, typescript, "typescript", None)
     assert directory == sub
-    assert command == "npm test"
+    assert command == ["npm", "test"]
 
     (sub / "Cargo.toml").write_text("[package]\nname='demo'\n", encoding="utf-8")
     rust = sub / "src" / "lib.rs"
     rust.write_text("fn place() -> i32 { 1 }\n", encoding="utf-8")
     command, directory = command_for(root, rust, "rust", None)
     assert directory == sub
-    assert command == "cargo test"
+    assert command == ["cargo", "test"]
 
     (sub / "go.mod").write_text("module example.com/demo\n", encoding="utf-8")
     go = sub / "pkg" / "widget.go"
@@ -324,16 +324,16 @@ def test_commands_follow_the_nearest_project_and_a_killed_process(tmp_path):
     go.write_text("package pkg\nfunc Run() int { return 1 }\n", encoding="utf-8")
     command, directory = command_for(root, go, "go", None)
     assert directory == sub
-    assert command == "go test -count=1 ./pkg"
+    assert command == ["go", "test", "-count=1", "./pkg"]
 
     (sub / "pyproject.toml").write_text("[project]\ndependencies=['pytest']\n", encoding="utf-8")
     python = sub / "app.py"
     python.write_text("def place():\n    return 1\n", encoding="utf-8")
     command, directory = command_for(root, python, "python", None)
     assert directory == sub
-    assert command.endswith("-m pytest")
+    assert command[-2:] == ["-m", "pytest"]
 
-    result = CommandRunner().run(f"{sys.executable} -c 'import time; time.sleep(30)'", tmp_path, 0.4)
+    result = CommandRunner().run([sys.executable, "-c", "import time; time.sleep(30)"], tmp_path, 0.4)
     assert result.timed_out is True
     assert result.code == 124
 

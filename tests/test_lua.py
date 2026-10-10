@@ -80,17 +80,25 @@ def test_lua_tests_run_busted_in_the_nearest_busted_or_rockspec_directory(tmp_pa
     (root / "pkg" / "demo-1.0-1.rockspec").write_text("", encoding="utf-8")
     source = root / "pkg" / "src" / "a.lua"
     source.write_text("", encoding="utf-8")
-    assert command_for(root, source, "lua", None) == ("busted --lua='/opt/lua 5.4/lua'", root / "pkg")
+    assert command_for(root, source, "lua", None) == (["busted", "--lua=/opt/lua 5.4/lua"], root / "pkg")
     loose = root / "b.lua"
     loose.write_text("", encoding="utf-8")
-    assert command_for(root, loose, "lua", None) == ("busted --lua='/opt/lua 5.4/lua'", root)
+    assert command_for(root, loose, "lua", None) == (["busted", "--lua=/opt/lua 5.4/lua"], root)
+
+
+def test_lua_plan_embeds_a_windows_interpreter_path_as_one_argument(tmp_path, monkeypatch, runners):
+    monkeypatch.setattr(runners, "lua_interpreter", lambda: "C:\\Program Files\\Lua 5.4\\lua.exe")
+    source = tmp_path / "a.lua"
+    source.write_text("", encoding="utf-8")
+    command, _directory = command_for(tmp_path, source, "lua", None)
+    assert command == ["busted", "--lua=C:\\Program Files\\Lua 5.4\\lua.exe"]
 
 
 def test_lua_falls_back_to_lua54_when_no_interpreter_is_found(tmp_path, monkeypatch, runners):
     monkeypatch.setattr(runners, "lua_interpreter", lambda: None)
     source = tmp_path / "a.lua"
     source.write_text("", encoding="utf-8")
-    assert command_for(tmp_path, source, "lua", None)[0] == "busted --lua=lua5.4"
+    assert command_for(tmp_path, source, "lua", None)[0] == ["busted", "--lua=lua5.4"]
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lua_project"
