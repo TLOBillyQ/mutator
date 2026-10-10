@@ -113,18 +113,26 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
-| Lua | `busted --lua=<lua5.4>`, the interpreter crapper finds (`lua5.4`, then `lua`) | nearest `.busted` or rockspec |
+| Lua | native Lua 5.4 loading `busted.runner` with `--ignore-lua` | nearest `.busted` or rockspec |
 
 Built-in plans run as argument vectors without a shell, so an interpreter
-path with spaces stays one argument. The busted `--lua` interpreter must be
-a real executable; a `.bat`/`.cmd` wrapper cannot be launched this way.
+path with spaces stays one argument. Lua uses crapper's interpreter discovery
+and LuaRocks wrapper module-path setup, then invokes Busted in that executable
+without Busted's shell-based `--lua` re-execution. Busted configuration and
+failure exit codes are preserved; baseline tests do not enable coverage.
+Use the matching sibling crapper checkout, which supplies this bootstrap helper.
 A `--test-command` you supply still runs through the shell as typed.
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
 ## Windows
 
-mutator runs on Windows through WSL2 with Ubuntu. Native Windows is not supported.
+WSL2 with Ubuntu remains the recommended Windows setup. Native Windows Lua
+runs also work with Python, a native Lua 5.4 executable, and Busted, LuaCov,
+and luacov-reporter-lcov installed in its LuaRocks tree. Make the Lua executable
+available on PATH and expose that tree through LUA_PATH and LUA_CPATH (or a
+LuaRocks interpreter wrapper whose module paths crapper can recover). Worker
+links require Windows Developer Mode or permission to create symbolic links.
 
 1. In an administrator PowerShell, run `wsl --install` and reboot.
 2. Open Ubuntu and clone into the Linux home directory, not `/mnt/c`.

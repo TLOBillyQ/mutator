@@ -78,30 +78,52 @@ def test_lua_local_functions_are_private():
 
 def test_lua_tests_run_busted_in_the_nearest_busted_or_rockspec_directory(tmp_path, monkeypatch, runners):
     monkeypatch.setattr(runners, "lua_interpreter", lambda: "/opt/lua 5.4/lua")
+    monkeypatch.setattr(runners, "_lua_package_setup", lambda lua: "")
     root = tmp_path.resolve()
     (root / "pkg" / "src").mkdir(parents=True)
     (root / "pkg" / "demo-1.0-1.rockspec").write_text("", encoding="utf-8")
     source = root / "pkg" / "src" / "a.lua"
     source.write_text("", encoding="utf-8")
-    assert command_for(root, source, "lua", None) == (["busted", "--lua=/opt/lua 5.4/lua"], root / "pkg")
+    command, directory = command_for(root, source, "lua", None)
+    assert command[0] == "/opt/lua 5.4/lua"
+    assert directory == root / "pkg"
+    (root / "pkg" / "src" / ".busted").write_text("return {}", encoding="utf-8")
+    assert command_for(root, source, "lua", None)[1] == root / "pkg" / "src"
     loose = root / "b.lua"
     loose.write_text("", encoding="utf-8")
-    assert command_for(root, loose, "lua", None) == (["busted", "--lua=/opt/lua 5.4/lua"], root)
+    assert command_for(root, loose, "lua", None)[1] == root
 
 
 def test_lua_plan_embeds_a_windows_interpreter_path_as_one_argument(tmp_path, monkeypatch, runners):
     monkeypatch.setattr(runners, "lua_interpreter", lambda: "C:\\Program Files\\Lua 5.4\\lua.exe")
+    monkeypatch.setattr(runners, "_lua_package_setup", lambda lua: "package.path = 'wrapper'; ")
     source = tmp_path / "a.lua"
     source.write_text("", encoding="utf-8")
     command, _directory = command_for(tmp_path, source, "lua", None)
-    assert command == ["busted", "--lua=C:\\Program Files\\Lua 5.4\\lua.exe"]
+    assert command == [
+        "C:\\Program Files\\Lua 5.4\\lua.exe", "-e",
+        "package.path = 'wrapper'; pcall(require, 'luarocks.loader'); "
+        "require('busted.runner')({standalone = false}); os.exit(0)",
+        "--", "busted", "--ignore-lua",
+    ]
 
 
 def test_lua_falls_back_to_lua54_when_no_interpreter_is_found(tmp_path, monkeypatch, runners):
     monkeypatch.setattr(runners, "lua_interpreter", lambda: None)
+    monkeypatch.setattr(runners, "_lua_package_setup", lambda lua: "")
     source = tmp_path / "a.lua"
     source.write_text("", encoding="utf-8")
-    assert command_for(tmp_path, source, "lua", None)[0] == ["busted", "--lua=lua5.4"]
+    assert command_for(tmp_path, source, "lua", None)[0][0] == "lua5.4"
+
+
+def test_lua_override_stays_a_shell_command_at_project_root(tmp_path, monkeypatch, runners):
+    monkeypatch.setattr(runners, "lua_interpreter", lambda: pytest.fail("override must skip discovery"))
+    source = tmp_path / "pkg" / "a.lua"
+    source.parent.mkdir()
+    source.write_text("", encoding="utf-8")
+    assert command_for(tmp_path, source, "lua", "custom busted --filter=calc") == (
+        "custom busted --filter=calc", tmp_path.resolve()
+    )
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "lua_project"
@@ -143,15 +165,8 @@ def _busted_argv_ready() -> bool:
     not _busted_argv_ready(), reason="busted and a Lua 5.4 interpreter are not installed"
 )
 def test_busted_runs_with_a_spaced_interpreter_path(tmp_path, monkeypatch, runners):
-    """Issue #1 AC1 end-to-end: a busted run whose interpreter path contains
-    spaces (and backslashes on Windows), launched in argv form.
-
-    The plan's ["busted", "--lua=<path>"] itself cannot run on Windows:
-    luarocks ships busted there as a .bat, which CreateProcess cannot launch
-    (see README), and busted's own --lua re-exec concatenates the path
-    unquoted through the shell, which breaks on spaces on every platform.
-    The run below uses the same argv dispatch with the interpreter as
-    argv[0] — exactly what the busted wrapper itself executes.
+    """Execute the generated plan with a spaced native interpreter, including
+    Busted config discovery and its success/failure exit codes.
     """
 
     interpreter = Path(_real_lua_interpreter())
@@ -167,11 +182,12 @@ def test_busted_runs_with_a_spaced_interpreter_path(tmp_path, monkeypatch, runne
 
     project = tmp_path / "project"
     (project / "src").mkdir(parents=True)
-    (project / ".busted").write_text("return {}\n", encoding="utf-8")
+    (project / ".busted").write_text("return { default = { ROOT = {'checks'} } }\n", encoding="utf-8")
     source = project / "src" / "calc.lua"
     source.write_text("return {}\n", encoding="utf-8")
-    (project / "spec").mkdir()
-    (project / "spec" / "calc_spec.lua").write_text(
+    (project / "checks").mkdir()
+    spec = project / "checks" / "calc_spec.lua"
+    spec.write_text(
         "describe('calc', function()\n"
         "  it('adds', function()\n"
         "    assert.are.equal(2, 1 + 1)\n"
@@ -182,7 +198,8 @@ def test_busted_runs_with_a_spaced_interpreter_path(tmp_path, monkeypatch, runne
 
     monkeypatch.setattr(runners, "lua_interpreter", lambda: str(lua))
     command, directory = command_for(tmp_path, source, "lua", None)
-    assert command == ["busted", f"--lua={lua}"]
+    assert command[0] == str(lua)
+    assert command[-3:] == ["--", "busted", "--ignore-lua"]
     assert directory == project
 
     script, tree = _busted_script()
@@ -191,9 +208,13 @@ def test_busted_runs_with_a_spaced_interpreter_path(tmp_path, monkeypatch, runne
     )
     library = "?.dll" if os.name == "nt" else "?.so"
     monkeypatch.setenv("LUA_CPATH", f"{tree}/lib/lua/5.4/{library};;")
-    result = CommandRunner().run([str(lua), str(script), "spec"], directory, 60)
+    result = CommandRunner().run(command, directory, 60)
     assert result.code == 0, result.output
-    assert "success" in result.output
+    assert "1 success" in result.output
+    spec.write_text("describe('calc', function() it('fails', function() assert.are.equal(3, 1 + 1) end) end)\n", encoding="utf-8")
+    failed = CommandRunner().run(command, directory, 60)
+    assert failed.code == 1, failed.output
+    assert "1 failure" in failed.output
 
 
 def _toolchain_ready() -> bool:

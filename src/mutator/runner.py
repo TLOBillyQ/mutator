@@ -333,4 +333,12 @@ def _lua_plan(root: Path, source: Path) -> tuple[Command, Path]:
     runners = ensure_crapper().runners
     directory = runners.lua_roots(root, [source])[0]
     lua = runners.lua_interpreter() or "lua5.4"
-    return ["busted", f"--lua={lua}"], directory
+    # Preserve module paths supplied by a LuaRocks interpreter wrapper, then
+    # run Busted in-process: its --lua re-exec loses quoting for spaced paths.
+    loader = runners._lua_package_setup(lua) + "pcall(require, 'luarocks.loader'); "
+    command = [
+        lua, "-e",
+        loader + "require('busted.runner')({standalone = false}); os.exit(0)",
+        "--", "busted", "--ignore-lua",
+    ]
+    return command, directory
