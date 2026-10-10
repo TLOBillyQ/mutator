@@ -1,5 +1,7 @@
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -155,6 +157,50 @@ def test_python_commands(tmp_path):
     conf.mkdir()
     (conf / "conftest.py").write_text("", encoding="utf-8")
     assert _python_command(conf)[-2:] == ["-m", "pytest"]
+
+
+def test_a_baseline_run_uses_a_dependency_installed_only_in_the_project_venv(tmp_path):
+    """Issue #3 AC5: the baseline runs on the project venv's interpreter.
+
+    The dependency exists only in the project venv's site-packages, so the
+    run fails unless test_plan picks that venv's interpreter.
+    """
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    created = subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(project / ".venv")],
+        capture_output=True,
+        text=True,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"python -m venv failed: {created.stderr.strip()}")
+    layout = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    interpreter = (project / ".venv").joinpath(*layout)
+    located = subprocess.run(
+        [str(interpreter), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    site_packages = Path(located.stdout.strip())
+    site_packages.mkdir(parents=True, exist_ok=True)
+    (site_packages / "venv_only_dep.py").write_text("VALUE = 41\n", encoding="utf-8")
+    (project / "test_dep.py").write_text(
+        "import unittest\n"
+        "import venv_only_dep\n\n"
+        "class DepTest(unittest.TestCase):\n"
+        "    def test_the_project_venv_dependency(self):\n"
+        "        self.assertEqual(venv_only_dep.VALUE, 41)\n",
+        encoding="utf-8",
+    )
+    command, directory = plan_command(project, project / "test_dep.py", "python", None)
+    result = CommandRunner().run(command, directory, 120)
+    assert result.code == 0, result.output
+    assert "OK" in result.output
+
+    outside = CommandRunner().run([sys.executable, "-m", "unittest", "discover"], directory, 120)
+    assert outside.code != 0  # mutator's own interpreter lacks the dependency
 
 
 def test_a_go_package_path_is_one_argument(tmp_path):
