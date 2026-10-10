@@ -22,6 +22,91 @@ class CommandResult:
     output: str
 
 
+if os.name == "nt":
+    import ctypes
+
+    class _BasicLimit(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", ctypes.c_ulong),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_ulong),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_ulong),
+            ("SchedulingClass", ctypes.c_ulong),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class _ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("basic", _BasicLimit),
+            ("io", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+
+def _windows_job(process: subprocess.Popen) -> int | None:
+    """A kill-on-close Job Object holding the process and its descendants.
+
+    Windows has no process groups, so a shell command times out by terminating
+    a Job: every descendant joins it at spawn, and none outlives the handle.
+    """
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
+    ]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    job = kernel32.CreateJobObjectW(None, None)
+    handle = getattr(process, "_handle", None)
+    if not job or handle is None:
+        if job:
+            kernel32.CloseHandle(job)
+        return None
+    info = _ExtendedLimitInformation()
+    info.basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    sized = ctypes.sizeof(info)
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), sized):
+        kernel32.CloseHandle(job)
+        return None
+    if not kernel32.AssignProcessToJobObject(job, handle):
+        kernel32.CloseHandle(job)
+        return None
+    return job
+
+
+def _windows_kill(pid: int, job: int | None) -> None:
+    """Terminate the tree rooted at the shell command.
+
+    taskkill walks the parent chain, so it must run while the tree is intact:
+    it reaches descendants that broke away from the Job (the venv python.exe
+    redirector re-executes the real interpreter outside it). Terminating the
+    Job afterwards cleans up anything taskkill missed.
+    """
+
+    import ctypes
+
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+    if job:
+        ctypes.windll.kernel32.TerminateJobObject(job, 124)
+
+
 def _worker_home(cwd: Path) -> Path | None:
     """The overlay root when cwd is inside target/mutation-workers."""
 
@@ -83,15 +168,24 @@ class CommandRunner:
             text=True,
             env=environment,
         )
+        job = _windows_job(process) if os.name == "nt" else None
         try:
             output, _err = process.communicate(timeout=timeout)
             code = process.returncode if process.returncode is not None else 1
             timed_out = False
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                _windows_kill(process.pid, job)
             output, _err = process.communicate()
             code = 124
             timed_out = True
+        finally:
+            if job:
+                import ctypes
+
+                ctypes.windll.kernel32.CloseHandle(job)
         seconds = time.monotonic() - started
         return CommandResult(code=code, timed_out=timed_out, seconds=seconds, output=output or "")
 
