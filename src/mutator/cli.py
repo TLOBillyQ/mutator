@@ -438,7 +438,7 @@ def _finish(baseline_failed: bool, survived: bool) -> int:
 
 def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
     runner = CommandRunner(verbose=options.verbose)
-    baselines: dict[tuple[str, str], tuple[bool, float, str]] = {}
+    baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str]] = {}
     forms = []
     written: list[str] = []
     baseline_failed = False
