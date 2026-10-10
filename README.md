@@ -115,6 +115,11 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
 | Lua | `busted --lua=<lua5.4>`, the interpreter crapper finds (`lua5.4`, then `lua`) | nearest `.busted` or rockspec |
 
+Built-in plans run as argument vectors without a shell, so an interpreter
+path with spaces stays one argument. The busted `--lua` interpreter must be
+a real executable; a `.bat`/`.cmd` wrapper cannot be launched this way.
+A `--test-command` you supply still runs through the shell as typed.
+
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
 ## Windows
@@ -137,6 +142,14 @@ mutator runs on Windows through WSL2 with Ubuntu. Native Windows is not supporte
 
 mutator warns at startup when it runs on native Windows or on a project
 under `/mnt/`.
+
+Native Windows process cleanup differs from POSIX in two ways. A timed-out
+test command is killed through a kill-on-close Job Object, so descendants
+still alive when the runner exits are killed even after a successful run —
+POSIX leaves them alone. And if a timed-out shell has already exited,
+descendants that broke away from the Job (the venv `python.exe` redirector
+re-executes the real interpreter outside it) escape both `taskkill`'s tree
+walk and the Job, so they can outlive the timeout.
 
 ## Development
 
