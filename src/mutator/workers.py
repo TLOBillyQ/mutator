@@ -378,6 +378,8 @@ def _execute(
         result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
     finally:
         destination.write_bytes(original)
+    if result.launch_error is not None:
+        raise result.launch_error
     if result.timed_out or result.code != 0:
         return "killed"
     return "survived"

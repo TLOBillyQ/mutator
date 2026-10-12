@@ -1,6 +1,7 @@
 """Worker acceptance tests force OS privilege denial, independent of host rights."""
 
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -143,7 +144,10 @@ def test_partial_overlay_and_source_junctions_do_not_write_through(monkeypatch, 
     try:
         assert not (worker / "outside").exists()
         assert not (worker / "cycle").exists()
-        assert not any(p.is_symlink() or p.is_junction() for p in worker.rglob("*"))
+        assert not any(
+            p.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            for p in worker.rglob("*")
+        )
         (worker / "assets" / "data.txt").write_text("private")
         # Cleanup also handles junctions created by the test command itself.
         subprocess.run(["cmd", "/c", "mklink", "/J", str(worker / "runtime-link"), str(external)],

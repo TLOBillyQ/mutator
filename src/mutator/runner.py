@@ -22,6 +22,7 @@ class CommandResult:
     timed_out: bool
     seconds: float
     output: str
+    launch_error: OSError | None = None
 
 
 if os.name == "nt":
@@ -203,7 +204,9 @@ class CommandRunner:
             )
         except OSError as exc:
             seconds = time.monotonic() - started
-            return CommandResult(code=127, timed_out=False, seconds=seconds, output=str(exc))
+            return CommandResult(
+                code=127, timed_out=False, seconds=seconds, output=str(exc), launch_error=exc
+            )
         job = _windows_job(process) if os.name == "nt" else None
         try:
             output, _err = process.communicate(timeout=timeout)
