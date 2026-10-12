@@ -219,10 +219,11 @@ def _apply_selected(
     baselines,
     outcomes,
     max_workers,
+    busted_task,
 ) -> RunResult | None:
     if not selected:
         return None
-    command, cwd = test_plan(root, path, language, test_command)
+    command, cwd = test_plan(root, path, language, test_command, busted_task)
     cache_key = (_command_key(command), str(cwd))
     _remember_baseline(baselines, cache_key, runner, command, cwd)
     ok, seconds, tail = baselines[cache_key]
@@ -274,6 +275,7 @@ def mutate_file(
     mutation_warning: int,
     baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str]],
     max_workers: int | None = None,
+    busted_task: str | None = None,
 ) -> RunResult:
     """Mutate one file and write its namespaces into `.metrics/mutate`."""
 
@@ -309,6 +311,7 @@ def mutate_file(
         baselines,
         outcomes,
         max_workers,
+        busted_task,
     )
     if failure is not None:
         return failure

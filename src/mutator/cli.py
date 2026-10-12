@@ -49,7 +49,12 @@ Options:
                                 coverage tools, then read the reports it wrote.
   --test-command <cmd>          Run this command for the baseline and every
                                 mutant. The working directory is the project
-                                root.
+                                root. Cannot be combined with --busted-task.
+  --busted-task <name>          Select a named task in .busted for the Lua
+                                baseline and every mutant (for example, fast).
+                                Other languages and coverage are unchanged.
+                                Cannot be combined with --test-command; put
+                                --run <name> in your custom command instead.
   --timeout-factor <number>     Mutant timeout, as a multiple of the baseline
                                 duration. Default: 10. The timeout is at least
                                 2 seconds.
@@ -113,6 +118,7 @@ class Options:
     use_existing_coverage: bool = False
     coverage_command: str | None = None
     test_command: str | None = None
+    busted_task: str | None = None
     timeout_factor: float = 10.0
     mutation_warning: int = 50
     max_workers: int | None = None
@@ -176,6 +182,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 options.test_command = _take(args, index, arg)
                 index += 2
                 continue
+            if arg == "--busted-task":
+                options.busted_task = _take(args, index, arg)
+                index += 2
+                continue
             if arg == "--timeout-factor":
                 options.timeout_factor = float(_take(args, index, arg))
                 if options.timeout_factor <= 0:
@@ -228,6 +238,12 @@ def parse_args(argv: list[str] | None = None) -> Options:
             index += 1
     except ValueError as exc:
         return Options(action="help", message=f"{exc}\n\n{HELP}", exit_code=1)
+    if options.busted_task is not None and options.test_command is not None:
+        return Options(
+            action="help",
+            message=f"--busted-task cannot be combined with --test-command\n\n{HELP}",
+            exit_code=1,
+        )
     if options.mutate_all and options.since_last_run:
         return Options(
             action="help",
@@ -457,6 +473,7 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             mutation_warning=options.mutation_warning,
             baselines=baselines,
             max_workers=options.max_workers,
+            busted_task=options.busted_task,
         )
         outcome = _record(result, forms, written)
         if outcome == "baseline":
