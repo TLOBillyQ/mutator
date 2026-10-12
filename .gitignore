@@ -7,3 +7,4 @@ target/
 *.egg-info/
 dist/
 build/
+.scratch/
