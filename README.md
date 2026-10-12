@@ -182,8 +182,8 @@ WSL2 with Ubuntu is also supported:
 
    ```bash
    cd ~
-   git clone -b lua https://github.com/TLOBillyQ/crapper.git
-   git clone -b lua https://github.com/TLOBillyQ/mutator.git
+   git clone -b lua https://github.com/qinyuanj/crapper.git
+   git clone -b lua https://github.com/qinyuanj/mutator.git
    ```
 
 3. Run `mutator/scripts/setup-ubuntu.sh`. It installs Python, Lua 5.4,
