@@ -74,9 +74,12 @@ whose text changed. Killed mutants in unchanged functions are kept.
 
 Selected mutants of one file run at the same time, one worker per core unless
 --max-workers says otherwise. A worker is a symlink overlay under
-target/mutation-workers with its own copy of the mutated file. The project
-tree is left unchanged. A copy left under target/mutator-backup/ by an
-interrupted older run is restored before a non-scan run.
+target/mutation-workers with its own copy of the mutated file. Native Windows
+falls back to isolated copies when symlink privilege is missing; Developer
+Mode and administrator rights are not required. Copies omit caches and
+existing symlinks/junctions (see README). The project tree is left unchanged.
+A copy left under target/mutator-backup/ by an interrupted older run is
+restored before a non-scan run.
 
 Exit codes:
   0  every executed mutant was killed, or there was nothing to run
@@ -471,10 +474,10 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
 
 
 def platform_warning(platform: str, root: Path) -> str | None:
-    """Windows runs mutator inside WSL2, with the project in the Linux filesystem."""
+    """Warn about slow Windows mounts under WSL, not supported native platforms."""
 
     if platform == "win32":
-        return "Native Windows is not supported. Run mutator inside WSL2; see the README."
+        return None
     if root.as_posix().startswith("/mnt/"):
         return (
             f"{root} is on a Windows drive. Under WSL2, clone the project under ~/ "

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import stat
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +44,8 @@ SKIP_LINK = frozenset(
         ".mypy_cache",
         ".clj-kondo",
         ".gradle",
+        ".uml-viewer",
+        ".toolcache",
     }
 )
 
@@ -88,20 +92,41 @@ def new_run_dir(root: Path) -> Path:
     return directory
 
 
+class _MissingSymlinkPrivilege(OSError):
+    pass
+
+
 def symlink(link: Path, target: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_symlink() or link.exists():
         link.unlink()
-    link.symlink_to(target.resolve())
+    try:
+        link.symlink_to(target.resolve(), target_is_directory=target.is_dir())
+    except OSError as error:
+        if getattr(error, "winerror", None) != 1314:
+            raise
+        raise _MissingSymlinkPrivilege(str(error)) from error
+
+
+def _is_link(path: Path) -> bool:
+    info = path.lstat()
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & 0x400  # FILE_ATTRIBUTE_REPARSE_POINT
+    )
 
 
 def delete_tree(path: Path) -> None:
-    """Remove a worker tree without following a link into the real project."""
+    """Remove worker data, unlinking reparse points without visiting their targets."""
 
-    if path.is_symlink():
-        path.unlink()
+    try:
+        linked = _is_link(path)
+    except FileNotFoundError:
         return
-    if not path.exists():
+    if linked:
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+        else:
+            path.rmdir()  # Windows directory junction
         return
     if path.is_dir():
         for child in list(path.iterdir()):
@@ -195,10 +220,14 @@ def _keep_dir(name: str) -> bool:
 
 def _source_files(root: Path):
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [name for name in dirnames if _keep_dir(name)]
+        dirnames[:] = [
+            name for name in dirnames
+            if _keep_dir(name) and not _is_link(Path(dirpath) / name)
+        ]
         for name in filenames:
-            if Path(name).suffix in _EXTENSIONS:
-                yield Path(dirpath) / name
+            source = Path(dirpath) / name
+            if source.suffix in _EXTENSIONS and not _is_link(source):
+                yield source
 
 
 def importers_of(root: Path, relative: str) -> set[str]:
@@ -269,21 +298,49 @@ def _overlay(worker: Path, root: Path, relative: str, original: bytes) -> None:
     destination.write_bytes(original)
 
 
+def _copy_tree(source: Path, destination: Path, excluded: Path) -> None:
+    """Copy ordinary entries only; never traverse a source link or reparse point."""
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for child in source.iterdir():
+        if child.name in SKIP_LINK or child.absolute() == excluded.absolute():
+            continue
+        if _is_link(child):
+            continue
+        target = destination / child.name
+        if child.is_dir():
+            _copy_tree(child, target, excluded)
+        else:
+            shutil.copyfile(child, target)
+
+
 def create_workers(
     base: Path, root: Path, relative: str, original: bytes, count: int
 ) -> list[Path]:
     created = []
     first = relative.split("/", 1)[0]
     importers = importers_of(root, relative)
-    for index in range(count):
-        worker = base / f"worker-{index}"
-        worker.mkdir(parents=True, exist_ok=True)
-        _copy_configs(worker, root, relative)
-        _link_children(worker, root, {first})
-        _overlay(worker, root, relative, original)
-        for importer in importers:
-            _copy_importer(worker, root, importer)
-        created.append(worker)
+    try:
+        for index in range(count):
+            worker = base / f"worker-{index}"
+            worker.mkdir(parents=True, exist_ok=True)
+            try:
+                _copy_configs(worker, root, relative)
+                _link_children(worker, root, {first})
+                _overlay(worker, root, relative, original)
+                for importer in importers:
+                    _copy_importer(worker, root, importer)
+            except _MissingSymlinkPrivilege:
+                # Discard every partial link before writing any copied files.
+                delete_tree(worker)
+                _copy_tree(root, worker, base)
+                destination = worker / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(original)
+            created.append(worker)
+    except BaseException:
+        delete_tree(base)
+        raise
     return created
 
 
