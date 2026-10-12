@@ -22,6 +22,7 @@ class CommandResult:
     timed_out: bool
     seconds: float
     output: str
+    launch_error: OSError | None = None
 
 
 if os.name == "nt":
@@ -203,7 +204,9 @@ class CommandRunner:
             )
         except OSError as exc:
             seconds = time.monotonic() - started
-            return CommandResult(code=127, timed_out=False, seconds=seconds, output=str(exc))
+            return CommandResult(
+                code=127, timed_out=False, seconds=seconds, output=str(exc), launch_error=exc
+            )
         job = _windows_job(process) if os.name == "nt" else None
         try:
             output, _err = process.communicate(timeout=timeout)
@@ -287,7 +290,10 @@ def _python_command(directory: Path) -> list[str]:
     return [interpreter, "-m", "unittest", "discover"]
 
 
-def test_plan(root: Path, source: Path, language: str, override: str | None) -> tuple[Command, Path]:
+def test_plan(
+    root: Path, source: Path, language: str, override: str | None,
+    busted_task: str | None = None,
+) -> tuple[Command, Path]:
     """The test command and the directory it runs in.
 
     A user override stays a shell string. Every generated command is an
@@ -323,11 +329,11 @@ def test_plan(root: Path, source: Path, language: str, override: str | None) -> 
         )
         return _python_command(directory), directory
     if language == "lua":
-        return _lua_plan(root, source)
+        return _lua_plan(root, source, busted_task)
     return ["false"], root
 
 
-def _lua_plan(root: Path, source: Path) -> tuple[Command, Path]:
+def _lua_plan(root: Path, source: Path, busted_task: str | None = None) -> tuple[Command, Path]:
     """busted in the nearest `.busted` or rockspec directory, on Lua 5.4."""
 
     runners = ensure_crapper().runners
@@ -341,4 +347,6 @@ def _lua_plan(root: Path, source: Path) -> tuple[Command, Path]:
         loader + "require('busted.runner')({standalone = false}); os.exit(0)",
         "--", "busted", "--ignore-lua",
     ]
+    if busted_task is not None:
+        command.extend(["--run", busted_task])
     return command, directory

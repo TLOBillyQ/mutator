@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from mutator.edn import dumps, keyword, loads
 from mutator.functions import mutation_file, mutation_namespace
@@ -150,7 +151,13 @@ def _render_snapshot(namespace: str, source: str, forms: list[dict], outcomes: d
 
 
 def _kept_forms(data: dict, file_key: str) -> list[dict]:
-    return [form for form in _forms_of(data) if _form_file(form, data) != file_key]
+    # Legacy forms inherit :source. Materialize it before changing :source
+    # to the newly published file in a shared namespace artifact.
+    return [
+        dict(form, file=_form_file(form, data))
+        for form in _forms_of(data)
+        if _form_file(form, data) != file_key
+    ]
 
 
 def _kept_outcomes(data: dict, file_key: str) -> dict[str, str]:
@@ -189,6 +196,10 @@ def _read_snapshots(root: Path) -> list[tuple[Path, dict]]:
 
 
 def _mentions_file(data: dict, file_key: str) -> bool:
+    if data.get("source") == file_key:
+        return True
+    if any(mutation_file(mutation) == file_key for mutation in _outcomes_of(data)):
+        return True
     for form in _forms_of(data):
         if _form_file(form, data) == file_key:
             return True
@@ -234,7 +245,9 @@ def _form_order(form: dict) -> tuple:
 def _snapshot_source(fresh: list[FormResult], kept_forms: list[dict], file_key: str) -> str:
     if fresh:
         return fresh[0].file
-    return str(kept_forms[0].get("file") or file_key)
+    if kept_forms:
+        return str(kept_forms[0].get("file") or file_key)
+    return file_key
 
 
 def _write_namespace(
@@ -256,10 +269,20 @@ def _write_namespace(
         path.unlink(missing_ok=True)
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        _render_snapshot(namespace, _snapshot_source(fresh, kept_forms, file_key), rendered, merged),
-        encoding="utf-8",
-    )
+    text = _render_snapshot(namespace, _snapshot_source(fresh, kept_forms, file_key), rendered, merged)
+    temporary = None
+    try:
+        # Same directory keeps replacement on one filesystem. Close before
+        # replacing so this works on Windows as well as POSIX.
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return path
 
 
@@ -285,9 +308,11 @@ def write_results(
 ) -> list[Path]:
     """Replace this file's forms, preserving other files that share a namespace.
 
-    One snapshot file per namespace. Older per-file snapshots for a namespace
-    this write touches are folded in and removed, so uml-viewer sees a single
-    map for that class.
+    One snapshot file per namespace, replaced atomically after source completion.
+    A source updating multiple namespaces is not a transaction across artifacts.
+    Older per-file snapshots for a namespace this write touches are folded in
+    and removed after publication succeeds, so uml-viewer sees a single map
+    for that class. Unrelated namespace artifacts are not rewritten.
     """
 
     root = root.resolve()
@@ -295,7 +320,7 @@ def write_results(
     incoming_outcomes = _file_outcomes(outcomes, file_key)
     existing = _read_snapshots(root)
     retained, previous = _retain(existing, file_key)
-    touched = set(incoming) | previous | set(retained)
+    touched = set(incoming) | previous
     written: list[Path] = []
     for namespace in sorted(touched):
         kept_forms, kept_outcomes = retained.get(namespace, ([], {}))

@@ -29,19 +29,27 @@ The first run of a tree executes every covered mutant. Start with the file you a
 
 Once a snapshot exists, the next run is differential. It reruns survivors and every site in a function whose text changed. Killed mutants in an unchanged function stay killed. `--since-last-run` is that same selection. `--mutate-all` ignores it.
 
-Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail. Exit `3` when a mutant survives. A failed baseline does not rewrite the snapshot.
+Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail. Exit `3` when a mutant survives; this is a valid result with published snapshots. A baseline failure takes precedence over survivors from other sources and does not rewrite the failed source's snapshot.
 
 ## Workers
 
 Mutants of one file run at the same time. The default is one worker per core. `--max-workers` sets the cap. The run uses the smaller of that cap, the number of cores, and the number of selected sites. Files are still taken one at a time.
 
-Each worker is a directory under `target/mutation-workers`. The file being mutated is a private copy. A module that reaches that file through a relative import is copied too, so Node resolves the import to the private copy. The rest of the tree is linked. The original files stay as they are. The overlay is removed when that file's mutants finish.
+Each worker is a directory under `target/mutation-workers`. The file being mutated is a private copy. A module that reaches that file through a relative import is copied too, so Node resolves the import to the private copy. On hosts with symlink privileges, the rest of the tree is linked. The original source stays unchanged. Workers are removed after success, setup failure, or runtime failure.
+
+When Windows reports missing symlink privilege (error 1314), mutator removes the partial overlay and rebuilds that worker as an isolated copy. Other filesystem errors remain visible. Copies exclude `.uml-viewer`, `.toolcache`, and the same version-control, virtualenv, build, worker, and cache directories excluded from overlays, at every depth. The worker destination is excluded even when it sits outside `target`. Copying can cost more disk space and startup time; `--max-workers` limits that cost.
+
+Copied workers omit existing symlinks, Windows junctions, and other reparse points, including internal aliases, broken links, and external targets. They never traverse these entries: this prevents cycles and writes through to the original tree. Projects that depend on linked source or dependencies must supply ordinary files/directories for copied workers. Ordinary dependencies such as `node_modules` are copied. Cleanup unlinks worker symlinks and junctions without visiting their targets, including links created by test commands.
 
 The baseline still runs once, in the real tree, before any worker starts. The mutant command then runs inside the worker, in the same directory it would have used in the real tree, so a relative path such as `src` or `./pkg` refers to the overlay. A copy left under `target/mutator-backup/` by an interrupted older run is restored before a non-scan run.
 
 ## Snapshot
 
 uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one namespace. A Java file with an inner class, or a Go file with a function and a method, therefore writes more than one file. Two Go files in the same package share one snapshot, and rerunning one of them keeps the other's forms.
+
+Publication starts only after all selected mutants of a source finish. Each affected namespace artifact is written to a temporary file beside its destination, then replaced atomically. Readers see a complete old or new artifact; a write or replacement failure leaves the old artifact intact. Unrelated namespaces are not rewritten. A baseline or worker execution failure leaves that source's previously published results intact, and a later source's failure preserves results already published for earlier sources.
+
+The atomicity boundary is one namespace artifact, not the whole source or run. If a source updates several artifacts and a later replacement fails, the earlier replacements remain published. Legacy snapshots are folded into the canonical namespace artifacts, preserving other sources' records, and removed only after the affected artifacts publish successfully. Stale records for the completed source are removed without deleting records owned by other sources.
 
 ```clojure
 {:version 1
@@ -121,18 +129,52 @@ and LuaRocks wrapper module-path setup, then invokes Busted in that executable
 without Busted's shell-based `--lua` re-execution. Busted configuration and
 failure exit codes are preserved; baseline tests do not enable coverage.
 Use the matching sibling crapper checkout, which supplies this bootstrap helper.
-A `--test-command` you supply still runs through the shell as typed.
+A `--test-command` you supply still runs through the shell as typed, with its
+quoted arguments intact. The runner returns the subprocess's original status;
+the mutation CLI maps a failed baseline to exit `2` and surviving mutants to
+exit `3` with published results.
+
+For a named task already defined in your project's `.busted`, select it with:
+
+```bash
+./mutator --busted-task fast --no-coverage src/calc.lua
+```
+
+The generated Lua command adds `--run fast` to both the baseline and every
+mutant while keeping the native interpreter and LuaRocks module-path setup.
+Task definitions belong to the consuming project. `--busted-task` affects Lua
+tests only; coverage commands and tests in other languages keep their existing
+plans. Supply coverage for the selected test set with `--use-existing-coverage`,
+or use `--no-coverage` to mutate every site.
+
+Combining `--busted-task` with `--test-command` is a usage error (exit `1`).
+For a custom command, include task selection yourself, for example
+`--test-command "busted --run fast spec"`; mutator runs that command unchanged.
+When changing test tasks, use `--mutate-all` to recompute outcomes previously
+killed under a different test set.
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
 ## Windows
 
-WSL2 with Ubuntu remains the recommended Windows setup. Native Windows Lua
-runs also work with Python, a native Lua 5.4 executable, and Busted, LuaCov,
-and luacov-reporter-lcov installed in its LuaRocks tree. Make the Lua executable
-available on PATH and expose that tree through LUA_PATH and LUA_CPATH (or a
-LuaRocks interpreter wrapper whose module paths crapper can recover). Worker
-links require Windows Developer Mode or permission to create symbolic links.
+Native Windows runs work without Developer Mode or administrator symlink
+rights: workers fall back to isolated copies on missing privilege. Install
+Python and each project's native test tools. For Lua, use a native Lua 5.4
+executable with Busted, LuaCov, and luacov-reporter-lcov in its LuaRocks tree.
+Make Lua available on PATH and expose that tree through LUA_PATH and LUA_CPATH
+(or a LuaRocks interpreter wrapper whose module paths crapper can recover).
+From PowerShell, install and invoke mutator with the worktree's Python:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e '.[dev]'
+.\.venv\Scripts\python.exe -m mutator --help
+```
+
+Built-in commands preserve argument vectors; custom `--test-command` strings
+use the native shell. The runner returns the test process's status, while the
+mutation CLI returns its aggregate statuses (`0`, `2`, or `3`) described above.
+WSL2 with Ubuntu is also supported:
 
 1. In an administrator PowerShell, run `wsl --install` and reboot.
 2. Open Ubuntu and clone into the Linux home directory, not `/mnt/c`.
@@ -148,8 +190,8 @@ links require Windows Developer Mode or permission to create symbolic links.
    busted, luacov, and luacov-reporter-lcov, then creates `.venv`.
 4. Edit in VS Code with the WSL extension (`code .` from Ubuntu).
 
-mutator warns at startup when it runs on native Windows or on a project
-under `/mnt/`.
+mutator warns when a WSL project is under `/mnt/`; native Windows runs do not
+emit an unsupported-platform warning.
 
 Native Windows process cleanup differs from POSIX in two ways. A timed-out
 test command is killed through a kill-on-close Job Object, so descendants
@@ -158,6 +200,17 @@ POSIX leaves them alone. And if a timed-out shell has already exited,
 descendants that broke away from the Job (the venv `python.exe` redirector
 re-executes the real interpreter outside it) escape both `taskkill`'s tree
 walk and the Job, so they can outlive the timeout.
+
+## macOS
+
+macOS uses the existing POSIX design: argument vectors run directly, custom
+command strings run through the shell, and each test process starts a new
+session. On timeout the runner kills the process group to clean up descendants.
+Successful runs leave independent descendants alone. Workers use symlink
+overlays with private mutant/configuration/Node importer copies, then unlink
+the overlay after completion or failure. Install Python and the project's test
+tools as on Linux. This design is shared with Linux; macOS execution was not
+part of this change's validation.
 
 ## Development
 
