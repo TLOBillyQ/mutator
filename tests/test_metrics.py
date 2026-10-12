@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from mutator.edn import dumps, loads
 from mutator.metrics import load_history, snapshot_path, write_results
 from mutator.model import FormResult
@@ -124,6 +128,101 @@ def test_a_non_canonical_snapshot_is_folded_into_the_namespace_file(tmp_path):
     by_id = {form["id"]: form for form in data["forms"]}
     assert by_id["defn/Stop"]["killed"] == 4
     assert by_id["defn/Run"]["file"] == "a.go"
+
+
+def test_replacement_failure_preserves_shared_snapshot_and_legacy_records(tmp_path, monkeypatch):
+    write_results(tmp_path, "a.go", [_form("demo", "Run", "a.go", "hash-a")], {})
+    path = snapshot_path(tmp_path, "demo")
+    original = path.read_bytes()
+    legacy = path.with_name("legacy.edn")
+    legacy.write_bytes(original)
+
+    def fail_replace(self, target):
+        assert Path(target) == path
+        # Readers still see the complete old artifact before the replacement.
+        assert path.read_bytes() == original
+        raise OSError("injected replacement failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected replacement failure"):
+        write_results(tmp_path, "b.go", [_form("demo", "Stop", "b.go", "hash-b")], {})
+    assert path.read_bytes() == original
+    assert legacy.read_bytes() == original
+    assert load_history(tmp_path, "a.go").forms[("demo", "defn/Run")].digest == "hash-a"
+    assert sorted(path.parent.iterdir()) == sorted([path, legacy])
+
+
+def test_publishing_only_replaces_affected_namespaces_including_stale_records(tmp_path):
+    write_results(tmp_path, "a.go", [_form("old", "Run", "a.go", "hash-a")], {})
+    write_results(tmp_path, "b.go", [_form("old", "Stop", "b.go", "hash-b")], {})
+    write_results(tmp_path, "other.go", [_form("unrelated", "Other", "other.go", "other")], {})
+    unrelated = snapshot_path(tmp_path, "unrelated")
+    unrelated.touch()
+    before = (unrelated.read_bytes(), unrelated.stat().st_mtime_ns)
+    written = write_results(tmp_path, "a.go", [_form("new", "Run", "a.go", "new-a")], {})
+    assert set(written) == {snapshot_path(tmp_path, "old"), snapshot_path(tmp_path, "new")}
+    assert (unrelated.read_bytes(), unrelated.stat().st_mtime_ns) == before
+    old = loads(snapshot_path(tmp_path, "old").read_text(encoding="utf-8"))
+    assert [form["file"] for form in old["forms"]] == ["b.go"]
+
+
+def test_shared_legacy_forms_keep_their_original_source_ownership(tmp_path):
+    path = snapshot_path(tmp_path, "demo")
+    path.parent.mkdir(parents=True)
+    path.write_text(dumps({
+        "namespace": "demo", "source": "a.go",
+        "forms": [{"id": "defn/Run", "line": 2, "hash": "hash-a", "killed": 1}],
+        "outcomes": {},
+    }), encoding="utf-8")
+    write_results(tmp_path, "b.go", [_form("demo", "Stop", "b.go", "hash-b")], {})
+    assert load_history(tmp_path, "a.go").forms[("demo", "defn/Run")].digest == "hash-a"
+    write_results(tmp_path, "b.go", [], {})
+    assert load_history(tmp_path, "a.go").forms[("demo", "defn/Run")].digest == "hash-a"
+
+
+def test_failure_in_second_artifact_keeps_first_publication_and_shared_outcomes(tmp_path, monkeypatch):
+    a_outcome = '["a.go","z","defn/Run",8,12,"false","true"]'
+    b_outcome = '["b.go","z","defn/Stop",8,12,"false","true"]'
+    write_results(tmp_path, "a.go", [_form("z", "Run", "a.go", "hash-a")], {a_outcome: "killed"})
+    write_results(tmp_path, "b.go", [_form("z", "Stop", "b.go", "old-b")], {b_outcome: "survived"})
+    z = snapshot_path(tmp_path, "z")
+    original = z.read_bytes()
+    legacy = z.with_name("legacy.edn")
+    legacy.write_bytes(original)
+    replace = Path.replace
+
+    def fail_second(self, target):
+        if Path(target) == z:
+            raise OSError("second artifact failed")
+        return replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second)
+    with pytest.raises(OSError, match="second artifact failed"):
+        write_results(tmp_path, "b.go", [
+            _form("first", "Fresh", "b.go", "fresh-b"),
+            _form("z", "Stop", "b.go", "new-b"),
+        ], {b_outcome: "killed"})
+    first = loads(snapshot_path(tmp_path, "first").read_text(encoding="utf-8"))
+    assert first["forms"][0]["hash"] == "fresh-b"
+    assert z.read_bytes() == original
+    assert legacy.read_bytes() == original
+    assert load_history(tmp_path, "a.go").outcomes == {a_outcome: "killed"}
+    assert load_history(tmp_path, "b.go").outcomes == {b_outcome: "survived"}
+    assert not list(z.parent.glob("*.tmp"))
+
+
+def test_stale_cleanup_preserves_shared_outcomes_without_forms(tmp_path):
+    a_outcome = '["a.go","demo","defn/Run",8,12,"false","true"]'
+    b_outcome = '["b.go","demo","defn/Stop",8,12,"false","true"]'
+    path = snapshot_path(tmp_path, "demo")
+    path.parent.mkdir(parents=True)
+    path.write_text(dumps({
+        "namespace": "demo", "source": "b.go", "forms": [],
+        "outcomes": {a_outcome: ":killed", b_outcome: ":survived"},
+    }), encoding="utf-8")
+    assert write_results(tmp_path, "b.go", [], {}) == [path]
+    assert load_history(tmp_path, "a.go").outcomes == {a_outcome: "killed"}
+    assert load_history(tmp_path, "b.go").outcomes == {}
 
 
 def test_dropping_a_file_removes_its_namespace_when_nothing_else_remains(tmp_path):
