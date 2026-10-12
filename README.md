@@ -129,7 +129,29 @@ and LuaRocks wrapper module-path setup, then invokes Busted in that executable
 without Busted's shell-based `--lua` re-execution. Busted configuration and
 failure exit codes are preserved; baseline tests do not enable coverage.
 Use the matching sibling crapper checkout, which supplies this bootstrap helper.
-A `--test-command` you supply still runs through the shell as typed.
+A `--test-command` you supply still runs through the shell as typed, with its
+quoted arguments intact. The runner returns the subprocess's original status;
+the mutation CLI maps a failed baseline to exit `2` and surviving mutants to
+exit `3` with published results.
+
+For a named task already defined in your project's `.busted`, select it with:
+
+```bash
+./mutator --busted-task fast --no-coverage src/calc.lua
+```
+
+The generated Lua command adds `--run fast` to both the baseline and every
+mutant while keeping the native interpreter and LuaRocks module-path setup.
+Task definitions belong to the consuming project. `--busted-task` affects Lua
+tests only; coverage commands and tests in other languages keep their existing
+plans. Supply coverage for the selected test set with `--use-existing-coverage`,
+or use `--no-coverage` to mutate every site.
+
+Combining `--busted-task` with `--test-command` is a usage error (exit `1`).
+For a custom command, include task selection yourself, for example
+`--test-command "busted --run fast spec"`; mutator runs that command unchanged.
+When changing test tasks, use `--mutate-all` to recompute outcomes previously
+killed under a different test set.
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
