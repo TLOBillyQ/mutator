@@ -2,6 +2,9 @@ import os
 import shutil
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from mutator.engine import mutate_file, restore_backups
 from mutator.edn import loads
@@ -139,6 +142,44 @@ def test_a_failed_baseline_does_not_rewrite_metrics(tmp_path):
     )
     assert result.baseline_failed
     assert not snapshot_path(tmp_path, "demo").exists()
+
+
+def test_outstanding_workers_and_execution_failure_preserve_previous_results(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+    options = dict(
+        covered_lines=None, ignore_coverage=True, mutate_all=True, lines=None,
+        test_command="fake", timeout_factor=10, mutation_warning=50, baselines={}, max_workers=2,
+    )
+    mutate_file(path, tmp_path, runner=FakeRunner(), **options)
+    snapshot = snapshot_path(tmp_path, "demo")
+    original = snapshot.read_bytes()
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Blocked:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            if timeout is not None:
+                entered.set()
+                assert release.wait(10), "worker was not released"
+                raise OSError("worker execution failed")
+            return CommandResult(code=0, timed_out=False, seconds=0.01, output="")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(mutate_file, path, tmp_path, runner=Blocked(), **options)
+        try:
+            assert entered.wait(10), "worker did not start"
+            assert not future.done()
+            assert snapshot.read_bytes() == original
+        finally:
+            release.set()
+        with pytest.raises(OSError, match="worker execution failed"):
+            future.result(timeout=10)
+    assert snapshot.read_bytes() == original
+    assert path.read_text(encoding="utf-8") == SOURCE
 
 
 def test_worker_count_follows_sites_cores_and_the_requested_cap():
