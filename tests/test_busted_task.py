@@ -18,7 +18,7 @@ def task_project(tmp_path: Path) -> Path:
     (project / "spec").mkdir()
     (project / "src" / "calc.lua").write_text(
         "local M = {}\nfunction M.add(x)\n  return x + 1\nend\nreturn M\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="\n",
     )
     (project / ".busted").write_text(
         "return { default = { lpath = 'src/?.lua', ROOT = {'spec'} },\n"
@@ -91,8 +91,8 @@ def test_fast_task_publishes_survivors_without_touching_sources_when_links_are_d
         "source": "src/calc.lua",
         "namespace": "calc",
         "outcomes": {
-            '["src/calc.lua","calc","defn/M.add",44,45,"+","-"]': "survived",
-            '["src/calc.lua","calc","defn/M.add",46,47,"1","0"]': "survived",
+            '["src/calc.lua","calc","defn/M.add",42,43,"+","-"]': "survived",
+            '["src/calc.lua","calc","defn/M.add",44,45,"1","0"]': "survived",
         },
         "forms": [{
             "id": "defn/M.add", "kind": "defn", "file": "src/calc.lua",
