@@ -29,7 +29,7 @@ The first run of a tree executes every covered mutant. Start with the file you a
 
 Once a snapshot exists, the next run is differential. It reruns survivors and every site in a function whose text changed. Killed mutants in an unchanged function stay killed. `--since-last-run` is that same selection. `--mutate-all` ignores it.
 
-Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail. Exit `3` when a mutant survives. A failed baseline does not rewrite the snapshot.
+Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail. Exit `3` when a mutant survives; this is a valid result with published snapshots. A baseline failure takes precedence over survivors from other sources and does not rewrite the failed source's snapshot.
 
 ## Workers
 
@@ -46,6 +46,10 @@ The baseline still runs once, in the real tree, before any worker starts. The mu
 ## Snapshot
 
 uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one namespace. A Java file with an inner class, or a Go file with a function and a method, therefore writes more than one file. Two Go files in the same package share one snapshot, and rerunning one of them keeps the other's forms.
+
+Publication starts only after all selected mutants of a source finish. Each affected namespace artifact is written to a temporary file beside its destination, then replaced atomically. Readers see a complete old or new artifact; a write or replacement failure leaves the old artifact intact. Unrelated namespaces are not rewritten. A baseline or worker execution failure leaves that source's previously published results intact, and a later source's failure preserves results already published for earlier sources.
+
+The atomicity boundary is one namespace artifact, not the whole source or run. If a source updates several artifacts and a later replacement fails, the earlier replacements remain published. Legacy snapshots are folded into the canonical namespace artifacts, preserving other sources' records, and removed only after the affected artifacts publish successfully. Stale records for the completed source are removed without deleting records owned by other sources.
 
 ```clojure
 {:version 1
