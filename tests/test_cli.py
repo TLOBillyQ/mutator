@@ -1,8 +1,67 @@
 import subprocess
 import sys
+from pathlib import Path
+
+import pytest
+
+from mutator.edn import loads
+from mutator.metrics import snapshot_path
 
 from mutator.cli import parse_args, run
 from mutator.runner import CommandResult
+
+
+@pytest.mark.parametrize("failure", ["baseline", "worker", "publication"])
+def test_later_source_failure_retains_completed_source_and_previous_results(
+    tmp_path, monkeypatch, failure
+):
+    from mutator.runner import CommandRunner
+
+    for name in ("a", "b"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+        (directory / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    def passing(self, command, cwd, timeout):
+        return CommandResult(code=0, timed_out=False, seconds=0.01, output="")
+
+    monkeypatch.setattr(CommandRunner, "run", passing)
+    args = ["--no-coverage", "--mutate-all", "--root", str(tmp_path)]
+    assert run(args) == 3
+    a_snapshot = snapshot_path(tmp_path, "a.calc")
+    b_snapshot = snapshot_path(tmp_path, "b.calc")
+    previous_b = b_snapshot.read_bytes()
+    replaced_a = []
+    replace = Path.replace
+
+    def replace_or_fail(self, target):
+        if Path(target) == b_snapshot and failure == "publication":
+            raise OSError("publication failed")
+        result = replace(self, target)
+        if Path(target) == a_snapshot:
+            replaced_a.append(a_snapshot.read_bytes())
+        return result
+
+    def failing(self, command, cwd, timeout):
+        is_b = cwd == tmp_path / "b" if timeout is None else cwd.name == "b"
+        if is_b and failure == "baseline" and timeout is None:
+            return CommandResult(code=1, timed_out=False, seconds=0.01, output="baseline failed")
+        if is_b and failure == "worker" and timeout is not None:
+            raise OSError("worker failed")
+        return passing(self, command, cwd, timeout)
+
+    monkeypatch.setattr(Path, "replace", replace_or_fail)
+    monkeypatch.setattr(CommandRunner, "run", failing)
+    if failure == "baseline":
+        assert run(args) == 2  # A's survivors must not override B's baseline failure.
+    else:
+        with pytest.raises(OSError, match=f"{failure} failed"):
+            run(args)
+    assert len(replaced_a) == 1
+    assert a_snapshot.read_bytes() == replaced_a[0]
+    assert loads(a_snapshot.read_text(encoding="utf-8"))["forms"][0]["survived"] == 1
+    assert b_snapshot.read_bytes() == previous_b
 
 
 def test_lines_option_parses_positive_numbers():
