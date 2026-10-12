@@ -119,7 +119,7 @@ def test_python_command_keeps_the_virtualenv_symlink(tmp_path):
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="virtualenv detection checks the POSIX bin/python layout; Windows runs under WSL2 (see README)",
+    reason="fixture uses POSIX executable permission bits and bin/python layout",
 )
 def test_python_command_falls_back_when_the_virtualenv_cannot_run(tmp_path):
     project = tmp_path / "proj"
