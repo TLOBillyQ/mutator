@@ -245,7 +245,9 @@ def _form_order(form: dict) -> tuple:
 def _snapshot_source(fresh: list[FormResult], kept_forms: list[dict], file_key: str) -> str:
     if fresh:
         return fresh[0].file
-    return str(kept_forms[0].get("file") or file_key)
+    if kept_forms:
+        return str(kept_forms[0].get("file") or file_key)
+    return file_key
 
 
 def _write_namespace(
