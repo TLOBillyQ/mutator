@@ -211,6 +211,20 @@ def test_failure_in_second_artifact_keeps_first_publication_and_shared_outcomes(
     assert not list(z.parent.glob("*.tmp"))
 
 
+def test_stale_cleanup_preserves_shared_outcomes_without_forms(tmp_path):
+    a_outcome = '["a.go","demo","defn/Run",8,12,"false","true"]'
+    b_outcome = '["b.go","demo","defn/Stop",8,12,"false","true"]'
+    path = snapshot_path(tmp_path, "demo")
+    path.parent.mkdir(parents=True)
+    path.write_text(dumps({
+        "namespace": "demo", "source": "b.go", "forms": [],
+        "outcomes": {a_outcome: ":killed", b_outcome: ":survived"},
+    }), encoding="utf-8")
+    assert write_results(tmp_path, "b.go", [], {}) == [path]
+    assert load_history(tmp_path, "a.go").outcomes == {a_outcome: "killed"}
+    assert load_history(tmp_path, "b.go").outcomes == {}
+
+
 def test_dropping_a_file_removes_its_namespace_when_nothing_else_remains(tmp_path):
     write_results(tmp_path, "a.go", [_form("demo", "Run", "a.go", "hash-a")], {})
     write_results(tmp_path, "a.go", [], {})
