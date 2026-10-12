@@ -1,7 +1,11 @@
 """Named Busted tasks through the CLI and real runner boundaries (issue #6)."""
 
+from datetime import datetime
 from pathlib import Path
 
+from test_worker_fallback import deny_links
+
+from mutator.edn import loads
 from mutator.cli import parse_args, run
 from mutator.runner import CommandRunner
 from mutator.runner import test_plan as command_for
@@ -48,6 +52,56 @@ def test_fast_task_leaves_survivors_and_publishes_selected_results(tmp_path):
     history = load_history(project, "src/calc.lua")
     assert list(history.outcomes.values()) == ["killed", "killed"]
     assert ":killed 2 :survived 0" in snapshot.read_text(encoding="utf-8")
+
+
+def test_fast_task_publishes_survivors_without_touching_sources_when_links_are_denied(
+    tmp_path, monkeypatch
+):
+    project = task_project(tmp_path)
+    originals = {
+        path: path.read_bytes() for path in project.rglob("*") if path.is_file()
+    }
+    deny_links(monkeypatch, after=0)
+    denied_link = Path.symlink_to
+    denied_workers = set()
+
+    def record_denial(path, target, target_is_directory=False):
+        try:
+            return denied_link(path, target, target_is_directory=target_is_directory)
+        except OSError as error:
+            assert error.winerror == 1314
+            denied_workers.add(path.parent)
+            raise
+
+    monkeypatch.setattr(Path, "symlink_to", record_denial)
+    monkeypatch.setattr("os.cpu_count", lambda: 2)
+    assert run([
+        "--root", str(project), "--no-coverage", "--mutate-all",
+        "--max-workers", "2", "--busted-task", "fast",
+    ]) == 3
+
+    # Each worker must actually encounter privilege denial, even on hosts with rights.
+    assert len(denied_workers) == 2
+    snapshot = project / ".metrics" / "mutate" / "calc.edn"
+    published = loads(snapshot.read_text(encoding="utf-8"))
+    assert datetime.fromisoformat(published.pop("tested-at")).tzinfo is not None
+    assert published["forms"][0].pop("hash")
+    assert published == {
+        "version": 1,
+        "source": "src/calc.lua",
+        "namespace": "calc",
+        "outcomes": {
+            '["src/calc.lua","calc","defn/M.add",44,45,"+","-"]': "survived",
+            '["src/calc.lua","calc","defn/M.add",46,47,"1","0"]': "survived",
+        },
+        "forms": [{
+            "id": "defn/M.add", "kind": "defn", "file": "src/calc.lua",
+            "line": 2, "end-line": 4, "killed": 0, "survived": 2,
+            "uncovered": 0, "sites": 2,
+        }],
+    }
+    assert {path: path.read_bytes() for path in originals} == originals
+    assert list((project / "target" / "mutation-workers").iterdir()) == []
 
 
 def test_busted_task_is_rejected_with_an_explicit_test_command():
