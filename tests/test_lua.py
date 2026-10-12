@@ -172,9 +172,12 @@ def test_busted_runs_with_a_spaced_interpreter_path(tmp_path, monkeypatch, runne
     interpreter = Path(_real_lua_interpreter())
     spaced = tmp_path / "lua tools" / "with space"
     spaced.mkdir(parents=True)
-    for artifact in interpreter.parent.iterdir():
-        if artifact.suffix.lower() in (".exe", ".dll", ".so"):
-            shutil.copy(artifact, spaced / artifact.name)
+    if os.name == "nt":
+        for artifact in interpreter.parent.iterdir():
+            if artifact.suffix.lower() in (".exe", ".dll", ".so"):
+                shutil.copy(artifact, spaced / artifact.name)
+    else:
+        shutil.copy(interpreter, spaced / interpreter.name)
     lua = spaced / interpreter.name
     assert " " in str(lua)
     if os.name == "nt":

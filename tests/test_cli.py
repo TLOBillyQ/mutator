@@ -64,6 +64,73 @@ def test_later_source_failure_retains_completed_source_and_previous_results(
     assert b_snapshot.read_bytes() == previous_b
 
 
+def test_mutant_launch_failure_preserves_snapshot_and_cleans_workers(tmp_path, monkeypatch):
+    source = tmp_path / "calc.py"
+    original = b"def add(a, b):\n    return a + b\n"
+    source.write_bytes(original)
+    command = f'"{sys.executable}" -c "raise SystemExit(0)"'
+    args = ["--no-coverage", "--mutate-all", "--root", str(tmp_path),
+            "--test-command", command, str(source)]
+    assert run(args) == 3
+    snapshot = snapshot_path(tmp_path, "calc")
+    previous = snapshot.read_bytes()
+    popen = subprocess.Popen
+
+    def fail_worker_launch(command, **kwargs):
+        if "mutation-workers" in Path(kwargs["cwd"]).parts:
+            raise OSError("mutant process could not launch")
+        return popen(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", fail_worker_launch)
+    with pytest.raises(OSError, match="mutant process could not launch"):
+        run(args)
+    assert snapshot.read_bytes() == previous
+    assert source.read_bytes() == original
+    assert not list((tmp_path / "target" / "mutation-workers").glob("run-*"))
+
+
+def test_real_exit_127_keeps_its_status_and_kills_the_mutant(tmp_path, capsys):
+    from mutator.runner import CommandRunner
+
+    result = CommandRunner().run([sys.executable, "-c", "raise SystemExit(127)"], tmp_path, None)
+    assert result.code == 127
+    assert result.launch_error is None
+    source = tmp_path / "calc.py"
+    original = b"def add(a, b):\n    return a + b\n"
+    source.write_bytes(original)
+    command = (f'"{sys.executable}" -c "from calc import add; '
+               'raise SystemExit(0 if add(2, 3) == 5 else 127)"')
+    assert run(["--no-coverage", "--mutate-all", "--root", str(tmp_path),
+                "--test-command", command, str(source)]) == 0
+    assert "KILLED" in capsys.readouterr().out
+    snapshot = loads(snapshot_path(tmp_path, "calc").read_text(encoding="utf-8"))
+    assert snapshot["forms"][0]["killed"] == 1
+    assert snapshot["forms"][0]["survived"] == 0
+    assert source.read_bytes() == original
+    assert not list((tmp_path / "target" / "mutation-workers").glob("run-*"))
+
+
+def test_baseline_launch_failure_returns_2_and_preserves_snapshot(tmp_path, monkeypatch):
+    source = tmp_path / "calc.py"
+    original = b"def add(a, b):\n    return a + b\n"
+    source.write_bytes(original)
+    command = f'"{sys.executable}" -c "raise SystemExit(0)"'
+    args = ["--no-coverage", "--mutate-all", "--root", str(tmp_path),
+            "--test-command", command, str(source)]
+    assert run(args) == 3
+    snapshot = snapshot_path(tmp_path, "calc")
+    previous = snapshot.read_bytes()
+
+    def fail_launch(command, **kwargs):
+        raise OSError("baseline process could not launch")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_launch)
+    assert run(args) == 2
+    assert snapshot.read_bytes() == previous
+    assert source.read_bytes() == original
+    assert not list((tmp_path / "target" / "mutation-workers").glob("run-*"))
+
+
 def test_lines_option_parses_positive_numbers():
     options = parse_args(["--lines", "2, 4", "src/demo.py"])
     assert options.lines == {2, 4}
