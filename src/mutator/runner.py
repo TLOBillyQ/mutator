@@ -134,7 +134,7 @@ def _worker_home(cwd: Path) -> Path | None:
             continue
         if not parent.name.startswith("run-"):
             continue
-        if parent.parent.name == "mutation-workers":
+        if parent.parent.name == "mutation-workers" and parent.parent.parent.name == "target":
             return candidate
     return None
 
@@ -165,6 +165,33 @@ def _prefer_worker_sources(cwd: Path, environment: dict) -> None:
     environment["PYTHONPATH"] = os.pathsep.join(entries)
 
 
+def _prefer_worker_lua(cwd: Path, environment: dict) -> None:
+    # These credentials describe this invocation, never an inherited worker.
+    environment.pop("MUTATOR_WORKER_ROOT", None)
+    environment.pop("MUTATOR_SOURCE_ROOT", None)
+    worker = _worker_home(cwd.resolve())
+    if worker is None:
+        return
+    source = worker.parents[3]
+    environment["MUTATOR_WORKER_ROOT"] = worker.as_posix()
+    environment["MUTATOR_SOURCE_ROOT"] = source.as_posix()
+    prefix = source.as_posix().rstrip("/") + "/"
+    for name in ("LUA_PATH", "LUA_PATH_5_4", "LUA_CPATH", "LUA_CPATH_5_4"):
+        if name not in environment:
+            continue
+        entries = []
+        for entry in environment[name].split(";"):
+            normalized = entry.replace("\\", "/")
+            inside_worker = os.path.normcase(normalized[:len(worker.as_posix()) + 1]) == os.path.normcase(worker.as_posix() + "/")
+            if not inside_worker and os.path.normcase(normalized[:len(prefix)]) == os.path.normcase(prefix):
+                relative = normalized[len(prefix):]
+                # Dependencies are intentionally absent from the overlay.
+                if relative.split("/", 1)[0].lower() != ".toolcache":
+                    entry = worker.as_posix() + "/" + relative
+            entries.append(entry)
+        environment[name] = ";".join(entries)
+
+
 def display_command(command: Command) -> str:
     """A shell-looking rendering. A list is quoted so it can be pasted."""
 
@@ -191,6 +218,7 @@ class CommandRunner:
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         _prefer_worker_sources(cwd, environment)
+        _prefer_worker_lua(cwd, environment)
         try:
             process = subprocess.Popen(
                 command,
@@ -333,6 +361,26 @@ def test_plan(
     return ["false"], root
 
 
+def _lua_worker_setup() -> str:
+    # A wrapper may have embedded the original paths in -e, after Lua read env.
+    return (
+        "do local source, worker = os.getenv('MUTATOR_SOURCE_ROOT'), os.getenv('MUTATOR_WORKER_ROOT'); "
+        "if source and worker then "
+        "local prefix = source:gsub('\\\\', '/'):gsub('/+$', '') .. '/'; "
+        "local function rebase(paths) local entries = {}; "
+        "for entry in (paths .. ';'):gmatch('(.-);') do "
+        "local normalized = entry:gsub('\\\\', '/'); "
+        "if normalized:sub(1, #worker + 1):lower() ~= (worker .. '/'):lower() "
+        "and normalized:sub(1, #prefix):lower() == prefix:lower() then "
+        "local relative = normalized:sub(#prefix + 1); "
+        "if (relative:match('^[^/]+') or ''):lower() ~= '.toolcache' then "
+        "entry = worker .. '/' .. relative end end; "
+        "entries[#entries + 1] = entry end; return table.concat(entries, ';') end; "
+        "package.path = rebase(package.path); package.cpath = rebase(package.cpath) "
+        "end end; "
+    )
+
+
 def _lua_plan(root: Path, source: Path, busted_task: str | None = None) -> tuple[Command, Path]:
     """busted in the nearest `.busted` or rockspec directory, on Lua 5.4."""
 
@@ -341,7 +389,7 @@ def _lua_plan(root: Path, source: Path, busted_task: str | None = None) -> tuple
     lua = runners.lua_interpreter() or "lua5.4"
     # Preserve module paths supplied by a LuaRocks interpreter wrapper, then
     # run Busted in-process: its --lua re-exec loses quoting for spaced paths.
-    loader = runners._lua_package_setup(lua) + "pcall(require, 'luarocks.loader'); "
+    loader = runners._lua_package_setup(lua) + _lua_worker_setup() + "pcall(require, 'luarocks.loader'); "
     command = [
         lua, "-e",
         loader + "require('busted.runner')({standalone = false}); os.exit(0)",

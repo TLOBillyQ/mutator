@@ -83,6 +83,8 @@ import sys, time
 from pathlib import Path
 from src.value import value
 assert sys.argv[3:] == ["argument with spaces", "a&b", "literal=3"]
+if value == 1:
+    sys.exit(0)  # Pristine worker baseline does not enter the mutation barrier.
 assert value in (2, 3)
 original = Path(sys.argv[1])
 assert original.read_bytes() == b"value = 1\\n"
@@ -189,7 +191,8 @@ def test_failed_copy_or_runtime_removes_workers(monkeypatch, tmp_path, stage):
         monkeypatch.setattr("shutil.copyfile", fail_copy)
         command = [sys.executable, "-c", "pass"]
     else:
-        command = [sys.executable, "-c", "import time; time.sleep(10)"]
+        command = [sys.executable, "-c",
+                   "from src.value import value; import time; time.sleep(10) if value != 1 else None"]
     site = Site("src/value.py", "value", "defn/value", "value", 1,
                 8, 9, "1", "2", "number", "two")
     outcomes = {}
@@ -219,7 +222,7 @@ def test_copied_node_relative_importers_execute_mutant(monkeypatch, tmp_path):
     (tmp_path / "test" / "bridge.mjs").write_text(
         "export { value } from '../src/value.mjs';\n")
     (tmp_path / "test" / "check.mjs").write_text(
-        "import { value } from './bridge.mjs';\nif (value !== 2) process.exit(19);\n")
+        "import { value } from './bridge.mjs';\nif (![1, 2].includes(value)) process.exit(19);\n")
     (tmp_path / "package.json").write_text('{"type":"module"}')
     deny_links(monkeypatch)
     site = Site("src/value.mjs", "value", "defn/value", "value", 1,
@@ -239,6 +242,9 @@ def test_runner_exception_cleans_copied_worker(monkeypatch, tmp_path):
         verbose = False
 
         def run(self, command, cwd, timeout):
+            if (cwd / "src" / "value.py").read_text() == "value = 1\n":
+                from mutator.runner import CommandResult
+                return CommandResult(0, False, .01, "")
             assert (cwd / "src" / "value.py").read_text() == "value = 2\n"
             raise RuntimeError("runner failed")
 

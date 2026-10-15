@@ -120,12 +120,15 @@ class _Ok:
         self.verbose = False
         self.seconds = seconds
         self.timeouts = []
+        self.pristine_workers = set()
         self._lock = threading.Lock()
 
     def run(self, command, cwd, timeout):
         with self._lock:
             self.timeouts.append(timeout)
-        code = 0 if timeout is None else 1
+            pristine = cwd not in self.pristine_workers
+            self.pristine_workers.add(cwd)
+        code = 0 if timeout is None or pristine else 1
         return CommandResult(code=code, timed_out=False, seconds=self.seconds, output="")
 
 

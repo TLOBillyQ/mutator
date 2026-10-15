@@ -467,6 +467,27 @@ def _run_all(
             future.result()
 
 
+class WorkerBaselineError(RuntimeError):
+    """An unmutated overlay cannot execute the project's test command."""
+
+
+def _check_worker(directory, root, cwd, runner, command, timeout) -> None:
+    result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
+    if result.launch_error is not None:
+        raise result.launch_error
+    if result.timed_out or result.code != 0:
+        tail = "\n".join(result.output.splitlines()[-20:])
+        # The run directory is deleted afterwards; a 20-line tail rarely names
+        # the failing test, so keep the whole output next to it.
+        log = root / "target" / "mutation-logs" / f"{directory.parent.name}-{directory.name}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(result.output, encoding="utf-8")
+        raise WorkerBaselineError(
+            f"Unmutated worker baseline failed in {directory} "
+            f"(exit {result.code}, timed_out={result.timed_out}); full output: {log}\n{tail}"
+        )
+
+
 def run_mutants(
     root: Path,
     source: Path,
@@ -490,6 +511,12 @@ def run_mutants(
         directories = create_workers(
             base, root, relative, original, worker_count(len(sites), max_workers)
         )
+        # Validate every pristine overlay before any mutation can earn a kill.
+        with ThreadPoolExecutor(max_workers=len(directories)) as pool:
+            checks = [pool.submit(_check_worker, directory, root, cwd, runner, command, timeout)
+                      for directory in directories]
+            for check in checks:
+                check.result()
         _run_all(
             directories,
             sites,

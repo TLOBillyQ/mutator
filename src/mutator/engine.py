@@ -11,7 +11,7 @@ from mutator.metrics import load_history, source_key, write_results
 from mutator.model import FormResult, RunResult, Site
 from mutator.report import format_scan
 from mutator.runner import Command, CommandRunner, display_command, test_plan
-from mutator.workers import run_mutants
+from mutator.workers import WorkerBaselineError, run_mutants
 
 
 def restore_backups(root: Path) -> list[Path]:
@@ -230,19 +230,22 @@ def _apply_selected(
     if not ok:
         return _baseline_failure(file_key, command, tail)
     timeout = max(2.0, seconds * timeout_factor)
-    run_mutants(
-        root,
-        path,
-        original,
-        selected,
-        max_workers,
-        runner,
-        command,
-        cwd,
-        timeout,
-        file_key,
-        outcomes,
-    )
+    try:
+        run_mutants(
+            root,
+            path,
+            original,
+            selected,
+            max_workers,
+            runner,
+            command,
+            cwd,
+            timeout,
+            file_key,
+            outcomes,
+        )
+    except WorkerBaselineError as error:
+        return _baseline_failure(file_key, command, str(error))
     return None
 
 

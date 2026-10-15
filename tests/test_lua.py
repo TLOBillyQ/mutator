@@ -22,6 +22,42 @@ def _sites(tmp_path: Path, relative: str, source: str):
     return sites_in_file(source, path, tmp_path, relative)
 
 
+@pytest.mark.parametrize("wrapper_setup", [False, True])
+def test_lua_plan_rebases_wrapper_paths_before_loading_worker_sources(tmp_path, monkeypatch, runners, wrapper_setup):
+    import json
+
+    lua = runners.lua_interpreter()
+    if lua is None:
+        pytest.skip("Lua 5.4 unavailable")
+    root = tmp_path / "project with spaces"
+    worker = root / "target" / "mutation-workers" / "run-1" / "worker-0"
+    (worker / "src").mkdir(parents=True)
+    (root / "src").mkdir()
+    source = root / "src" / "value.lua"
+    source.write_text("return 'main'\n", encoding="utf-8")
+    (worker / "src" / "value.lua").write_text("return 'worker'\n", encoding="utf-8")
+    cache = root / ".toolcache" / "luarocks"
+    (cache / "busted").mkdir(parents=True)
+    (cache / "busted" / "runner.lua").write_text(
+        "return function() assert(require('src.value') == 'worker', 'loaded original source'); "
+        "print('worker source loaded') end\n", encoding="utf-8")
+    paths = root.as_posix() + "/?.lua;" + cache.as_posix() + "/?.lua;" + root.as_posix() + "/"
+    if wrapper_setup:
+        # Reproduce fixed -e paths emitted after probing a LuaRocks wrapper.
+        monkeypatch.setattr(runners, "_lua_package_setup", lambda _: (
+            "package.path = " + json.dumps(paths) + "; package.cpath = ''; "))
+    else:
+        for name in ("LUA_PATH", "LUA_PATH_5_4"):
+            monkeypatch.setenv(name, paths)
+        for name in ("LUA_CPATH", "LUA_CPATH_5_4"):
+            monkeypatch.setenv(name, "")
+        monkeypatch.setattr(runners, "_lua_package_setup", lambda _: "")
+    command, _ = command_for(root, source, "lua", None)
+    result = CommandRunner().run(command, worker, 5)
+    assert result.code == 0, result.output
+    assert result.output.strip() == "worker source loaded"
+
+
 def test_lua_operators_booleans_and_constants(tmp_path):
     source = """local M = {}
 
@@ -100,12 +136,10 @@ def test_lua_plan_embeds_a_windows_interpreter_path_as_one_argument(tmp_path, mo
     source = tmp_path / "a.lua"
     source.write_text("", encoding="utf-8")
     command, _directory = command_for(tmp_path, source, "lua", None)
-    assert command == [
-        "C:\\Program Files\\Lua 5.4\\lua.exe", "-e",
-        "package.path = 'wrapper'; pcall(require, 'luarocks.loader'); "
-        "require('busted.runner')({standalone = false}); os.exit(0)",
-        "--", "busted", "--ignore-lua",
-    ]
+    assert command[:2] == ["C:\\Program Files\\Lua 5.4\\lua.exe", "-e"]
+    assert command[2].startswith("package.path = 'wrapper'; ")
+    assert command[2].endswith("require('busted.runner')({standalone = false}); os.exit(0)")
+    assert command[3:] == ["--", "busted", "--ignore-lua"]
 
 
 def test_lua_falls_back_to_lua54_when_no_interpreter_is_found(tmp_path, monkeypatch, runners):

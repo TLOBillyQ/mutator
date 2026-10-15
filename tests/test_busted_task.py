@@ -124,12 +124,10 @@ def test_busted_task_is_a_single_argv_entry_in_the_generated_command(tmp_path, m
     command, directory = command_for(
         tmp_path, source, "lua", None, busted_task="task with spaces"
     )
-    assert command == [
-        "/opt/lua 5.4/lua", "-e",
-        "package.path = 'wrapped'; pcall(require, 'luarocks.loader'); "
-        "require('busted.runner')({standalone = false}); os.exit(0)",
-        "--", "busted", "--ignore-lua", "--run", "task with spaces",
-    ]
+    assert command[:2] == ["/opt/lua 5.4/lua", "-e"]
+    assert command[2].startswith("package.path = 'wrapped'; ")
+    assert command[2].endswith("require('busted.runner')({standalone = false}); os.exit(0)")
+    assert command[3:] == ["--", "busted", "--ignore-lua", "--run", "task with spaces"]
     assert directory == tmp_path.resolve()
     explicit, explicit_dir = command_for(
         tmp_path, source, "lua", "busted --run 'task with spaces'"

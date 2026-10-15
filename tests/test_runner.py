@@ -253,6 +253,46 @@ def test_a_missing_program_reports_127(tmp_path):
     assert result.timed_out is False
 
 
+def test_worker_lua_paths_prefer_private_sources_and_keep_project_cache(tmp_path, monkeypatch):
+    import json
+
+    root = tmp_path / "project with spaces"
+    worker = root / "target" / "mutation-workers" / "run-1" / "worker-0"
+    worker.mkdir(parents=True)
+    for name in ("LUA_PATH", "LUA_PATH_5_4", "LUA_CPATH", "LUA_CPATH_5_4"):
+        monkeypatch.setenv(name, ";".join([
+            root.as_posix() + "/?.lua",
+            str(root / "src" / "?.lua"),
+            root.as_posix() + "/.toolcache/luarocks/?.lua",
+            root.as_posix() + "-other/?.lua",
+            "./?.lua", "", "external/?.lua",
+        ]))
+    names = ["LUA_PATH", "LUA_PATH_5_4", "LUA_CPATH", "LUA_CPATH_5_4",
+             "MUTATOR_WORKER_ROOT", "MUTATOR_SOURCE_ROOT"]
+    command = [sys.executable, "-c",
+               "import json, os, sys; print(json.dumps({k: os.getenv(k) for k in sys.argv[1:]}))",
+               *names]
+    result = CommandRunner().run(command, worker, 5)
+    assert result.code == 0, result.output
+    environment = json.loads(result.output)
+    expected = ";".join([
+        worker.as_posix() + "/?.lua", worker.as_posix() + "/src/?.lua",
+        root.as_posix() + "/.toolcache/luarocks/?.lua",
+        root.as_posix() + "-other/?.lua", "./?.lua", "", "external/?.lua",
+    ])
+    for name in names[:4]:
+        assert environment[name] == expected
+    assert Path(environment["MUTATOR_WORKER_ROOT"]) == worker
+    assert Path(environment["MUTATOR_SOURCE_ROOT"]) == root
+    # The baseline outside a worker cannot inherit stale worker credentials.
+    monkeypatch.setenv("MUTATOR_WORKER_ROOT", "stale")
+    monkeypatch.setenv("MUTATOR_SOURCE_ROOT", "stale")
+    baseline = CommandRunner().run(command, root, 5)
+    environment = json.loads(baseline.output)
+    assert environment["MUTATOR_WORKER_ROOT"] is None
+    assert environment["MUTATOR_SOURCE_ROOT"] is None
+
+
 def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
     worker = tmp_path / "target" / "mutation-workers" / "run-1" / "worker-0"
     (worker / "src").mkdir(parents=True)

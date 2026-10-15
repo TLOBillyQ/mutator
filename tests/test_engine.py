@@ -88,8 +88,8 @@ def test_mutants_are_killed_or_kept_and_the_snapshot_is_differential(tmp_path):
     )
     assert second.forms[0].killed == 1
     assert second.forms[0].survived == 3
-    # Baseline plus the three survivors. The killed mutant stays in the snapshot.
-    assert runner.calls - first_calls == 4
+    # Main baseline, pristine overlays, and three survivors; the kill is cached.
+    assert runner.calls - first_calls == 4 + worker_count(3, None)
 
 
 def test_uncovered_sites_are_not_executed(tmp_path):
@@ -142,6 +142,41 @@ def test_a_failed_baseline_does_not_rewrite_metrics(tmp_path):
     )
     assert result.baseline_failed
     assert not snapshot_path(tmp_path, "demo").exists()
+
+
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_failed_pristine_worker_baseline_preserves_metrics(tmp_path, timed_out):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+    options = dict(covered_lines=None, ignore_coverage=True, mutate_all=True, lines=None,
+                   test_command="fake", timeout_factor=10, mutation_warning=50,
+                   baselines={}, max_workers=1)
+    mutate_file(path, tmp_path, runner=FakeRunner(), **options)
+    snapshot = snapshot_path(tmp_path, "demo")
+    previous = snapshot.read_bytes()
+
+    class BrokenWorker:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            if cwd == tmp_path:
+                return CommandResult(0, False, 0.01, "")
+            assert (cwd / "src" / "demo.py").read_text(encoding="utf-8") == SOURCE, "mutated before worker baseline"
+            return CommandResult(124 if timed_out else 1, timed_out, 0.01,
+                                 "helper setup failed before test execution")
+
+    result = mutate_file(path, tmp_path, runner=BrokenWorker(), **{**options, "baselines": {}})
+    assert result.baseline_failed
+    assert "worker-0" in result.baseline_message
+    assert "helper setup failed before test execution" in result.baseline_message
+    logs = list((tmp_path / "target" / "mutation-logs").glob("run-*-worker-0.log"))
+    assert len(logs) == 1 and str(logs[0]) in result.baseline_message
+    assert logs[0].read_text(encoding="utf-8") == "helper setup failed before test execution"
+    assert result.forms == [] and result.written == []
+    assert snapshot.read_bytes() == previous
+    assert path.read_text(encoding="utf-8") == SOURCE
+    assert not list((tmp_path / "target" / "mutation-workers").iterdir())
 
 
 def test_outstanding_workers_and_execution_failure_preserve_previous_results(tmp_path):
@@ -285,8 +320,8 @@ def test_a_mutation_run_leaves_the_project_tree_unchanged(tmp_path):
         def run(self, command, cwd, timeout):
             if timeout is not None:
                 assert "mutation-workers" in cwd.as_posix()
-                assert (cwd / "src" / "demo.py").read_text(encoding="utf-8") != original
-            return CommandResult(code=0 if timeout is None else 1, timed_out=False, seconds=0.01, output="")
+            mutated = (cwd / "src" / "demo.py").read_text(encoding="utf-8") != original
+            return CommandResult(code=int(mutated), timed_out=False, seconds=0.01, output="")
 
     mutate_file(
         path,
