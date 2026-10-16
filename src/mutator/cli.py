@@ -13,6 +13,7 @@ from mutator.engine import mutate_file, restore_backups, scan_file
 from mutator.report import format_results, format_site_log
 from mutator.runner import CommandRunner
 from mutator import timings
+from mutator.workers import WorkerPool
 
 HELP = """\
 Usage: mutator [options] [path-or-filter ...]
@@ -505,32 +506,35 @@ def _mutate_files(options: Options, root: Path, files: list[Path], indexes: dict
     written: list[str] = []
     baseline_failed = False
     survived = False
-    for path in files:
-        index = None
-        if indexes and path.suffix == ".lua":
-            directory = ensure_crapper().runners.lua_roots(root, [path])[0]
-            index = indexes.get(directory)
-        result = mutate_file(
-            path,
-            root,
-            runner=runner,
-            covered_lines=_coverage_for(options, root, path),
-            ignore_coverage=options.no_coverage,
-            mutate_all=options.mutate_all,
-            lines=options.lines,
-            test_command=options.test_command,
-            timeout_factor=options.timeout_factor,
-            mutation_warning=options.mutation_warning,
-            baselines=baselines,
-            max_workers=options.max_workers,
-            busted_task=options.busted_task,
-            lua_coverage=index,
-        )
-        outcome = _record(result, forms, written)
-        if outcome == "baseline":
-            baseline_failed = True
-        elif outcome == "survived":
-            survived = True
+    lua_sources = [path for path in files if path.suffix == ".lua"]
+    with WorkerPool(root, lua_sources) as worker_pool:
+        for path in files:
+            index = None
+            if indexes and path.suffix == ".lua":
+                directory = ensure_crapper().runners.lua_roots(root, [path])[0]
+                index = indexes.get(directory)
+            result = mutate_file(
+                path,
+                root,
+                runner=runner,
+                covered_lines=_coverage_for(options, root, path),
+                ignore_coverage=options.no_coverage,
+                mutate_all=options.mutate_all,
+                lines=options.lines,
+                test_command=options.test_command,
+                timeout_factor=options.timeout_factor,
+                mutation_warning=options.mutation_warning,
+                baselines=baselines,
+                max_workers=options.max_workers,
+                busted_task=options.busted_task,
+                lua_coverage=index,
+                worker_pool=worker_pool if path.suffix == ".lua" else None,
+            )
+            outcome = _record(result, forms, written)
+            if outcome == "baseline":
+                baseline_failed = True
+            elif outcome == "survived":
+                survived = True
     if forms:
         print(format_results(forms), end="")
     for path in written:

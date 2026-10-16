@@ -1,13 +1,14 @@
 """Run mutants in symlink overlays, the way clj-mutate runs its workers.
 
 Each worker is a directory under target/mutation-workers. Project files are
-linked in. The file under test is a private copy, so workers can mutate it at
-the same time without touching the original tree. The overlay is removed when
-the file's mutants finish.
+linked in. Sources under test are private copies, so workers can mutate them
+without touching the original tree. A Lua run can retain a fixed overlay across
+files after validating restoration; other callers use per-file overlays.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -316,13 +317,14 @@ def _copy_tree(source: Path, destination: Path, excluded: Path) -> None:
 
 
 def create_workers(
-    base: Path, root: Path, relative: str, original: bytes, count: int
+    base: Path, root: Path, relative: str, original: bytes, count: int,
+    *, start: int = 0,
 ) -> list[Path]:
     created = []
     first = relative.split("/", 1)[0]
     importers = importers_of(root, relative)
     try:
-        for index in range(count):
+        for index in range(start, start + count):
             worker = base / f"worker-{index}"
             worker.mkdir(parents=True, exist_ok=True)
             try:
@@ -366,6 +368,7 @@ def _execute(
     file_key: str,
     plans: dict[str, tuple[Command, float]] | None = None,
     phase: str = "mutant",
+    validate=None,
 ) -> str:
     if plans is not None:
         command, timeout = plans.get(site.mutation_id, (command, timeout))
@@ -377,6 +380,8 @@ def _execute(
         )
         return "survived"
     destination = directory / relative
+    if validate is not None:
+        validate(directory)
     mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
     destination.write_bytes(mutated.encode("utf-8"))
     try:
@@ -390,7 +395,14 @@ def _execute(
                 file=sys.stderr,
             )
     finally:
+        if validate is not None and any(
+            _is_link(path) for path in (destination, *destination.parents)
+            if path == directory or directory in path.parents
+        ):
+            raise WorkerBaselineError(f"Worker source binding replaced in {directory}")
         destination.write_bytes(original)
+    if validate is not None:
+        validate(directory)
     if result.launch_error is not None:
         raise result.launch_error
     if result.timed_out or result.code != 0:
@@ -414,6 +426,7 @@ def _drain(
     plans: dict[str, tuple[Command, float]] | None,
     checked_command: Command,
     first_site: Site | None = None,
+    validate=None,
 ) -> None:
     checked = {tuple(checked_command) if isinstance(checked_command, list) else checked_command}
     while True:
@@ -428,7 +441,11 @@ def _drain(
             selected_command, selected_timeout = plans.get(site.mutation_id, (command, timeout))
             key = tuple(selected_command) if isinstance(selected_command, list) else selected_command
             if key not in checked:
+                if validate is not None:
+                    validate(directory)
                 _check_worker(directory, root, cwd, runner, selected_command, selected_timeout)
+                if validate is not None:
+                    validate(directory)
                 checked.add(key)
         if runner.verbose:
             with lock:
@@ -445,6 +462,7 @@ def _drain(
             timeout,
             file_key,
             plans,
+            validate=validate,
         )
         with lock:
             outcomes[site.mutation_id] = status
@@ -469,6 +487,7 @@ def _run_all(
     plans: dict[str, tuple[Command, float]] | None,
     checked_command: Command,
     reserved: list[Site] | None = None,
+    validate=None,
 ) -> None:
     pending: Queue = Queue()
     for site in sites[len(reserved or []):]:
@@ -494,6 +513,7 @@ def _run_all(
                 plans.get(reserved[index].mutation_id, (command, timeout))[0]
                 if reserved is not None and plans is not None else checked_command,
                 reserved[index] if reserved is not None else None,
+                validate,
             )
             for index, directory in enumerate(directories)
         ]
@@ -523,6 +543,117 @@ def _check_worker(directory, root, cwd, runner, command, timeout) -> None:
         )
 
 
+def _worker_state(directory: Path, *, project=False) -> dict[str, tuple[str, bytes | str]]:
+    """Fingerprint private data and link bindings without following directory links."""
+    state = {}
+    def visit(folder):
+        for path in folder.iterdir():
+            if project and (path.name in SKIP_LINK or path.name in {"node_modules", ".claude", ".agents"}):
+                continue
+            key = path.relative_to(directory).as_posix()
+            if _is_link(path):
+                state[key] = ("link", str(path.resolve()))
+                if project and path.is_dir():
+                    raise WorkerBaselineError(f"Worker reuse cannot freeze linked project directory: {path}")
+                if project and path.is_file():
+                    state[key + "/@contents"] = ("file", hashlib.sha256(path.read_bytes()).digest())
+            elif path.is_dir():
+                state[key] = ("directory", "")
+                visit(path)
+            else:
+                state[key] = ("file", hashlib.sha256(path.read_bytes()).digest())
+    visit(directory)
+    return state
+
+
+class WorkerPool:
+    """Run-scoped Lua overlays with a fixed set of private source bindings.
+
+    Layout never changes after the first baseline. Any unexpected private data
+    change poisons the pool; callers must discard it rather than trust a kill.
+    Commands are still checked separately on every worker and working directory.
+    """
+
+    def __init__(self, root: Path, sources: list[Path]):
+        self.root = root.resolve()
+        self.sources = {
+            path.resolve().relative_to(self.root).as_posix(): path.read_bytes()
+            for path in sources
+        }
+        self.base = None
+        self.directories = []
+        self.states = {}
+        self.checked = set()
+        self.failed = False
+        self.project_state = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        if self.base is not None:
+            delete_tree(self.base)
+        self.failed = True
+
+    def prepare(self, relative, original, count):
+        if self.failed or self.sources.get(relative) != original:
+            raise WorkerBaselineError("Worker pool source binding changed or pool failed")
+        if self.base is None:
+            self.base = new_run_dir(self.root)
+            try:
+                self.project_state = _worker_state(self.root, project=True)
+                self.directories = create_workers(
+                    self.base, self.root, relative, original, count)
+                for directory in self.directories:
+                    for name in self.sources:
+                        _copy_importer(directory, self.root, name)
+                    self.states[directory] = _worker_state(directory)
+            except BaseException:
+                self.close()
+                raise
+        self.validate()
+        if len(self.directories) < count:
+            added = create_workers(
+                self.base, self.root, relative, original,
+                count - len(self.directories), start=len(self.directories))
+            for directory in added:
+                for name in self.sources:
+                    _copy_importer(directory, self.root, name)
+                self.states[directory] = _worker_state(directory)
+            self.directories.extend(added)
+        return self.directories[:count]
+
+    def validate_directory(self, directory):
+        if _worker_state(directory) != self.states[directory]:
+            self.failed = True
+            raise WorkerBaselineError(f"Worker restoration failed in {directory}")
+
+    def validate(self):
+        if _worker_state(self.root, project=True) != self.project_state:
+            self.failed = True
+            raise WorkerBaselineError("Project inputs changed during worker reuse")
+        for name, original in self.sources.items():
+            if (self.root / name).read_bytes() != original:
+                self.failed = True
+                raise WorkerBaselineError(f"Original source changed during worker reuse: {name}")
+        for directory in self.directories:
+            self.validate_directory(directory)
+
+
+    def check(self, directory, root, cwd, runner, command, timeout):
+        mapped = mapped_cwd(directory, root, cwd)
+        if not mapped.is_relative_to(directory.resolve()):
+            raise WorkerBaselineError(f"Worker working directory escapes overlay: {cwd}")
+        key = (directory, str(mapped),
+               ("shell", command) if isinstance(command, str) else ("argv", *command))
+        if key not in self.checked:
+            _check_worker(directory, root, cwd, runner, command, timeout)
+            self.checked.add(key)
+
+
 def run_mutants(
     root: Path,
     source: Path,
@@ -540,17 +671,23 @@ def run_mutants(
     check_command: Command | None = None,
     check_timeout: float | None = None,
     confirmation: tuple[Command, float] | None = None,
+    pool: WorkerPool | None = None,
 ) -> None:
     """Mutate ``sites`` in parallel overlays of ``root``. The source stays put."""
 
     if not sites:
         return
-    base = new_run_dir(root)
+    if pool is not None and root.resolve() != pool.root:
+        pool.close()
+        raise WorkerBaselineError("Worker pool belongs to a different project root")
+    base = new_run_dir(root) if pool is None else None
     try:
         relative = source.resolve().relative_to(root.resolve()).as_posix()
         with measure("worker-prepare"):
-            directories = create_workers(
-                base, root, relative, original, worker_count(len(sites), max_workers)
+            count = worker_count(len(sites), max_workers)
+            directories = (
+                create_workers(base, root, relative, original, count)
+                if pool is None else pool.prepare(relative, original, count)
             )
         reserved = sites[:len(directories)] if plans is not None else None
         first_plans = [
@@ -561,13 +698,17 @@ def run_mutants(
             for _directory in directories
         ]
         # Validate every pristine overlay before any mutation can earn a kill.
-        with ThreadPoolExecutor(max_workers=len(directories)) as pool:
+        with ThreadPoolExecutor(max_workers=len(directories)) as executor:
             checks = [
-                pool.submit(_check_worker, directory, root, cwd, runner, *first_plan)
+                executor.submit(
+                    _check_worker if pool is None else pool.check,
+                    directory, root, cwd, runner, *first_plan)
                 for directory, first_plan in zip(directories, first_plans)
             ]
             for check in checks:
                 check.result()
+        if pool is not None:
+            pool.validate()
         completed: dict[str, str] = {}
         _run_all(
             directories,
@@ -584,6 +725,7 @@ def run_mutants(
             plans,
             command if check_command is None else check_command,
             reserved,
+            pool.validate_directory if pool is not None else None,
         )
         if confirmation is not None:
             full_command, full_timeout = confirmation
@@ -594,13 +736,25 @@ def run_mutants(
             ]
             if survivors:
                 directory = directories[0]
+                if pool is not None:
+                    pool.validate_directory(directory)
                 _check_worker(directory, root, cwd, runner, full_command, full_timeout)
+                if pool is not None:
+                    pool.validate_directory(directory)
                 for site in survivors:
                     completed[site.mutation_id] = _execute(
                         directory, site, root, relative, original, runner,
                         full_command, cwd, full_timeout, file_key,
                         phase="survivor-confirmation",
+                        validate=pool.validate_directory if pool is not None else None,
                     )
+        if pool is not None:
+            pool.validate()
         outcomes.update(completed)
+    except BaseException:
+        if pool is not None:
+            pool.close()
+        raise
     finally:
-        delete_tree(base)
+        if base is not None:
+            delete_tree(base)

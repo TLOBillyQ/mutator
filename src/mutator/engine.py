@@ -16,7 +16,7 @@ from mutator.metrics import load_history, source_key, write_results
 from mutator.model import FormResult, RunResult, Site
 from mutator.report import format_scan
 from mutator.runner import Command, CommandRunner, display_command, run_tests, test_plan
-from mutator.workers import WorkerBaselineError, run_mutants
+from mutator.workers import WorkerBaselineError, WorkerPool, run_mutants
 from mutator.timings import measure
 
 
@@ -277,6 +277,7 @@ def _apply_selected(
     max_workers,
     busted_task,
     lua_coverage=None,
+    worker_pool=None,
 ) -> RunResult | None:
     if not selected:
         return None
@@ -317,6 +318,7 @@ def _apply_selected(
             check_command=check_command,
             check_timeout=check_timeout,
             confirmation=confirmation,
+            pool=worker_pool if standard_lua else None,
         )
     except WorkerBaselineError as error:
         return _baseline_failure(file_key, command, str(error))
@@ -354,6 +356,7 @@ def mutate_file(
     max_workers: int | None = None,
     busted_task: str | None = None,
     lua_coverage: LuaCoverageIndex | None = None,
+    worker_pool: WorkerPool | None = None,
 ) -> RunResult:
     """Mutate one file and write its namespaces into `.metrics/mutate`."""
 
@@ -393,6 +396,7 @@ def mutate_file(
         max_workers,
         busted_task,
         lua_coverage,
+        worker_pool,
     )
     if failure is not None:
         return failure
