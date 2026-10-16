@@ -23,7 +23,10 @@ against that reference would require at most 254.4 seconds.
 
 ## Changes
 
-- Lua mutant commands use Busted's built-in `--no-keep-going`.
+- Lua mutant commands use Busted's built-in `--no-keep-going`. Busted discovers
+  and compiles all spec files first, but after a failure it skips later files'
+  execution and insulation. This preserves file order; reordering spec files
+  could change shared-state behavior and is not part of this optimization.
 - Previously surviving Lua mutants are scheduled first, with stable ordering for
   the remaining selection. History changes execution order only; every selected
   site still runs and receives a fresh outcome.
@@ -87,8 +90,36 @@ coverage-collection improvements, not end-to-end mutation speedups. Lua process
 RSS was still approximately 900 MB midway through this standalone run; the
 serialized size reduction does not establish a reduction in peak memory.
 
-The reserved-first worker change requires separate real-project timing; the
-interrupted selection benchmark imported the preceding version.
+The three-worker full-suite acceptance completed in 545.313 seconds with
+explicit coverage reuse, approximately 2.33× faster than the historical
+1,272-second snapshot interval. It did **not** meet the 5× goal. All 35 sites
+matched history exactly: 31 killed, 3 survived and one uncovered. No mutant timed
+out. Original source bytes and the historical snapshot remained unchanged.
+
+| Phase | Measurement |
+| --- | ---: |
+| Coverage reuse | 2.016 s |
+| Root full-suite baseline | 79.563 s |
+| Worker preparation | 0.261 s |
+| Three pristine worker checks | 336.532 s summed; 112.18 s mean |
+| 34 mutant executions | 1,049.202 s summed; 30.86 s mean |
+| Mutation wall time | 543.281 s |
+| Total wall time | 545.313 s |
+
+Concurrent phase totals sum execution time and must not be added as elapsed
+wall time. This one-file acceptance pays a cold root baseline; multi-file runs
+reuse that root baseline, while worker checks remain per file. Collection from
+scratch adds a separate cost; the reuse result is not a first-run result.
+
+The run showed both short and long failing paths: several killed mutants
+completed in approximately two seconds, while others required approximately
+106–108 seconds. All three historical survivors completed in approximately
+116 seconds each. Fail-fast benefits depend on where failure occurs in the
+existing suite order.
+
+The reserved-first worker change requires separate real-project timing for
+opted-in spec selection; the interrupted selection benchmark imported the
+preceding version.
 
 ## Reproduction
 
@@ -116,6 +147,11 @@ A 5× end-to-end improvement has not been demonstrated. Preserve full-suite
 semantics when investigating Busted's spec loading and auto-insulation costs;
 changing isolation is a behavioral change. Larger worker counts are not assumed
 to improve throughput on the measured six-core host.
+
+The root baseline is cached across files within a run, but worker overlays and
+pristine worker checks are still created per source file. Reusing workers could
+amortize this cost, but would require a separately validated restoration and
+per-file binding protocol; it is not implemented here.
 
 Profile collector memory before changing its representation again. Integer
 membership bitsets or immutable interned memberships may reduce overhead, but
