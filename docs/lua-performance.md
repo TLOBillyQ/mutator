@@ -131,10 +131,17 @@ the full-suite acceptance configuration is:
 python -m mutator --root <monopoly> --mutate-all --reuse-coverage --full-suite --max-workers 3 --timings src/app/cosmetics/transaction_context.lua
 ```
 
-This public command publishes snapshots. The diagnostic acceptance harness
-instead suppresses snapshot publication, checks original source bytes, and
-compares every outcome with the historical snapshot. Exit 3 from the public
+This public command publishes snapshots. The diagnostic acceptance harness,
+`scripts/lua-perf/benchmark.py <monopoly> --reuse`, instead suppresses snapshot
+publication, checks original source bytes, and compares every outcome with the
+historical snapshot. `scripts/lua-perf/collect.py <monopoly>` measures fresh
+collection. Both write reports to `target/lua-perf/`. Exit 3 from the public
 command is a valid survivor result; it is not a reason to retry.
+
+The raw reports behind the measurements above are in
+[`docs/lua-performance/`](lua-performance/). They predate the harness's
+`source`, `test_scope`, `max_workers` and `coverage_reuse` fields; the
+full-suite report used three workers and coverage reuse.
 
 Compare first-run coverage cost separately from explicit reuse. The historical
 reference used twelve workers; the new full-suite acceptance uses three, so its
