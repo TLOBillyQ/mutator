@@ -153,10 +153,11 @@ It does not isolate the effect of fail-fast or worker count.
 
 ## Remaining work
 
-Remaining real-project acceptance work is tracked as qinyuanj/mutator#10 (worker
-reuse). Issue #11 has a [completed memory comparison](lua-collector-memory.md).
-Issue #12 (selected-spec timing) has a [completed measurement](lua-selected-specs.md),
-with outcome parity and no measured speedup against the historical interval.
+The three follow-up measurements are complete: issue #10 covers
+[worker reuse](lua-worker-reuse.md), #11 covers
+[collector memory](lua-collector-memory.md), and #12 covers
+[selected-spec timing](lua-selected-specs.md). Selected-spec outcomes matched
+history, but its run did not improve on the historical interval.
 
 A 5× end-to-end improvement has not been demonstrated. Preserve full-suite
 semantics when investigating Busted's spec loading and auto-insulation costs;
@@ -167,8 +168,12 @@ The root baseline is cached across files within a run. Default Lua runs now
 also retain workers across files, with fixed private source bindings and
 restoration validation before reuse and publication. See
 [`lua-worker-reuse.md`](lua-worker-reuse.md) for the validation boundary and the
-multi-file acceptance command. The measurements above predate worker reuse and
-remain a one-file reference.
+multi-file acceptance results. On the two-file, four-mutant sample, exact
+outcomes matched and pristine checks fell from four to two; summed check time
+fell from 560.1 to 341.6 seconds. Wall time fell from 382.109 to 290.187 seconds
+under uncontrolled concurrent load. This single sample excludes collection and
+cannot establish whole-project speedup. The measurements above predate worker
+reuse and remain a one-file reference.
 
 The packed-membership collector reduced real-project process peak working set
 from 1,115.10 MiB to 872.85 MiB (21.72%) in a sequential native-cluacov comparison.
