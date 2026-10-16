@@ -45,7 +45,8 @@ Options:
   --no-coverage                 Treat every site as covered.
   --use-existing-coverage       Read coverage already on disk. Same as
                                 --reuse-coverage.
-  --reuse-coverage              Read coverage already on disk.
+  --reuse-coverage              Read coverage already on disk. --select-specs
+                                recollects a missing or invalid Lua spec index.
   --coverage-command <cmd>      Run this command instead of the per-language
                                 coverage tools, then read the reports it wrote.
   --test-command <cmd>          Run this command for the baseline and every
@@ -65,8 +66,11 @@ Options:
                                 once. Default: one per core. The run uses the
                                 smaller of this limit, the cores, and the
                                 number of selected sites.
-  --full-suite                  Disable Lua spec-file selection; run all tests
-                                for every mutant.
+  --select-specs                Opt into Lua spec-file selection. Requires tests
+                                whose behavior is independent of other spec files;
+                                shared state can change mutation outcomes.
+  --full-suite                  Run all tests for every mutant (the default).
+                                Cannot be combined with --select-specs.
   --timings                     Print phase totals and mean mutant duration.
   --verbose                     Print each test command and each mutant.
 
@@ -133,6 +137,7 @@ class Options:
     verbose: bool = False
     timings: bool = False
     full_suite: bool = False
+    select_specs: bool = False
 
 
 def _take(args: list[str], index: int, option: str) -> str:
@@ -237,6 +242,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 options.since_last_run = True
                 index += 1
                 continue
+            if arg == "--select-specs":
+                options.select_specs = True
+                index += 1
+                continue
             if arg == "--full-suite":
                 options.full_suite = True
                 index += 1
@@ -255,6 +264,12 @@ def parse_args(argv: list[str] | None = None) -> Options:
             index += 1
     except ValueError as exc:
         return Options(action="help", message=f"{exc}\n\n{HELP}", exit_code=1)
+    if options.select_specs and options.full_suite:
+        return Options(
+            action="help",
+            message=f"--select-specs cannot be combined with --full-suite\n\n{HELP}",
+            exit_code=1,
+        )
     if options.busted_task is not None and options.test_command is not None:
         return Options(
             action="help",
@@ -398,7 +413,7 @@ def _prepare_coverage(options: Options, root: Path, files: list[Path]) -> dict:
     crapper = ensure_crapper()
     indexes = {}
     remaining = files
-    if not (options.full_suite or options.test_command or options.coverage_command):
+    if options.select_specs and not (options.full_suite or options.test_command or options.coverage_command):
         from mutator.lua_coverage import collect
 
         lua_files = [path for path in files if path.suffix == ".lua"]

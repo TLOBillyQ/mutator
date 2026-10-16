@@ -154,16 +154,22 @@ For a custom command, include task selection yourself, for example
 When changing test tasks, use `--mutate-all` to recompute outcomes previously
 killed under a different test set.
 
-Lua runs collect line coverage and spec-file membership in a single Busted +
-LuaCov run. Each mutant then runs only the spec files that covered its line,
-with Busted's `--no-keep-going` to skip later tests after a failure. Busted's
-auto-insulation remains enabled. Lines executed outside a spec file, such as
-module initialization in a helper, fall back to the full suite. Unknown
-membership also falls back to the full suite. `--full-suite` disables selection;
-custom `--test-command` strings are never rewritten. A mutant that survives its
-selected tests is confirmed against the full suite before it is recorded as
-survived: execution coverage cannot detect an assertion in another spec that
-observes shared state written by the selected spec.
+Lua uses the full suite by default, with Busted's `--no-keep-going` to skip
+later tests after a failure. `--select-specs` explicitly enables spec-file
+selection for suites whose spec files behave independently. Shared state across
+files can change mutation outcomes in either direction, even when all pristine
+subset checks pass. Use the default full suite for such projects.
+
+With `--select-specs`, Lua collects line coverage and spec-file membership in a
+single Busted + LuaCov run. Each mutant runs the spec files that covered its
+line. Busted's auto-insulation remains enabled. Lines executed outside a spec
+file, such as module initialization in a helper, and unknown membership fall
+back to the full suite. `--full-suite` explicitly retains the default and cannot
+be combined with `--select-specs`; custom `--test-command` strings are never
+rewritten. A mutant that survives its selected tests is confirmed against the
+full suite before it is recorded as survived. This catches missed downstream
+assertions, but cannot establish independent spec behavior or rule out false
+kills caused by omitted shared-state setup.
 
 Each distinct selected command must also pass on pristine source; a failing
 subset falls back to the full suite. These checks are cached for the run and
@@ -172,26 +178,25 @@ suite startup as well as spec time, so helper and interpreter startup are not
 lost from a short plan's timeout.
 
 Every pristine worker is checked before any mutant runs. For selected Lua tests,
-the check uses the union of the spec files needed by that source's mutants. If
-any mutant needs the full suite, the worker check uses the full suite too. Each
-worker also checks a distinct selected command on pristine source before first
-using it; those checks are cached within that worker. A failing worker check
-stops publication for that source.
+each worker reserves its first mutant and checks that mutant's exact test command.
+All workers must pass before mutations begin. Each worker checks any new command
+on pristine source before first using it; successful checks are cached within that
+worker. A failing worker check stops publication for that source.
 Selected mutants use the larger of `max(2 seconds, --timeout-factor × (shared
 suite overhead + selected spec wall times))` and the measured pristine selected
 command's timeout. Coverage times are measured during collection and include
 coverage overhead. Full-suite mutants retain the ordinary baseline timeout.
 
 The spec index is stored next to the managed LuaCov stats and LCOV report under
-`target/coverage/lua`. Normal runs rebuild it. `--reuse-coverage` (also
+`target/coverage/lua`. Runs with `--select-specs` normally rebuild it. `--reuse-coverage` (also
 `--use-existing-coverage`) reuses a valid index for the same Busted task and
 command; a missing or invalid index triggers fresh collection. Explicit reuse
 can use stale source coverage. Use fresh coverage after changing source or tests.
 
-`--timings` prints coverage, baseline, worker preparation, worker checks and
-mutant totals, followed by the mutation run's wall time. Concurrent worker
-phase totals sum thread time and can exceed elapsed wall time. An unchanged
-selection containing only previously killed mutants skips coverage and keeps
+`--timings` prints coverage, baseline, worker preparation, worker checks, mutant
+and survivor-confirmation totals, followed by the mutation run's wall time.
+Concurrent worker phase totals sum thread time and can exceed elapsed wall time.
+An unchanged selection containing only previously killed mutants skips coverage and keeps
 the existing snapshots. Survivors continue to run on each invocation.
 
 For other languages, coverage is generated with crapper's commands unless
