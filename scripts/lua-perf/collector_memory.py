@@ -147,6 +147,20 @@ def main():
     checkout = Path(__file__).resolve().parents[2]
     baseline = subprocess.check_output(['git', 'show', f'{args.baseline}:src/mutator/lua_coverage.lua'], cwd=checkout).decode()
     candidate = (checkout / 'src/mutator/lua_coverage.lua').read_text(encoding='utf-8')
+    def project_state():
+        head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip()
+        tracked = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z']).decode().split('\0')
+        digest = hashlib.sha256()
+        for name in sorted(filter(None, tracked)):
+            digest.update(name.encode())
+            digest.update(b'\0')
+            path = root / name
+            digest.update(b'file\0' + path.read_bytes() if path.is_file() else b'missing\0')
+        diff = subprocess.check_output(['git', '-C', str(root), 'diff', 'HEAD', '--binary'])
+        return {'head': head, 'tracked_content_sha256': digest.hexdigest(),
+                'diff_sha256': hashlib.sha256(diff).hexdigest()}
+
+    initial_state = project_state()
     source_hash = hashlib.sha256((root / args.source).read_bytes()).hexdigest()
     native_probe = None
     if args.require_native:
@@ -158,11 +172,15 @@ def main():
     artifacts = checkout / 'target/lua-perf/collector-memory'
     artifacts.mkdir(parents=True, exist_ok=True)
     first, before = run(root, root / args.source, baseline, artifacts, 'baseline')
+    between_state = project_state()
     second, after = run(root, root / args.source, candidate, artifacts, 'candidate')
+    final_state = project_state()
     parity = {key: first[key] == second[key] for key in ('version', 'complete', 'unsafe', 'specIds', 'lines', 'fallback')}
     source_after = hashlib.sha256((root / args.source).read_bytes()).hexdigest()
     assert source_hash == source_after, 'Source bytes changed during benchmark'
-    report = {'project_commit': subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']).decode().strip(),
+    report = {'project_commit': initial_state['head'],
+              'project_states': {'before': initial_state, 'between': between_state, 'after': final_state},
+              'tracked_inputs_unchanged': initial_state['tracked_content_sha256'] == between_state['tracked_content_sha256'] == final_state['tracked_content_sha256'],
               'source': args.source, 'source_sha256': source_hash, 'source_unchanged': True,
               'native_probe': native_probe,
               'baseline_commit': args.baseline, 'baseline': before, 'candidate': after, 'parity': parity,
@@ -171,6 +189,7 @@ def main():
               'environment': {name: os.environ.get(name) for name in ('LUA_PATH', 'LUA_CPATH')}}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+    assert report['tracked_inputs_unchanged'], 'Tracked project inputs changed during benchmark'
     assert all(parity.values()), parity
     assert not first['unsafe'] and not second['unsafe']
 
