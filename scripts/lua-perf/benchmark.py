@@ -12,6 +12,7 @@ differ, 2 when the baseline fails.
 import argparse
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +20,7 @@ from unittest.mock import patch
 from mutator import timings
 from mutator.coverage import covered_lines
 from mutator.engine import mutate_file
-from mutator.lua_coverage import collect
+from mutator.lua_coverage import collect, load
 from mutator.metrics import load_history
 from mutator.runner import CommandRunner
 
@@ -35,9 +36,20 @@ parser.add_argument('--historical-seconds', type=float, default=1272,
                     help='reference elapsed time; a snapshot interval is only a proxy')
 args = parser.parse_args()
 
+
+def revision(directory):
+    result = subprocess.run(
+        ['git', '-C', str(directory), 'rev-parse', 'HEAD'],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+checkout = Path(__file__).resolve().parents[2]
 root = args.root.resolve()
 source = root / args.source
-artifacts = Path(__file__).resolve().parents[2] / 'target' / 'lua-perf'
+revisions = {'mutator_commit': revision(checkout), 'project_commit': revision(root)}
+artifacts = checkout / 'target' / 'lua-perf'
 artifacts.mkdir(parents=True, exist_ok=True)
 original = source.read_bytes()
 key = source.relative_to(root).as_posix()
@@ -45,7 +57,8 @@ previous_outcomes = dict(load_history(root, key).outcomes)
 started = time.monotonic()
 timings.reset()
 with timings.measure('coverage'):
-    index = collect(root, source, reuse=args.reuse, verbose=False)
+    cached = load(root, source) if args.reuse else None
+    index = cached if cached is not None else collect(root, source, verbose=False)
 print('COLLECTED', len(index.specs), 'specs', f'{time.monotonic()-started:.3f}s', flush=True)
 memberships = {}
 for line in index.lines.get(os.path.normcase(str(source)), {}):
@@ -72,6 +85,7 @@ expected = {k: v for k, v in previous_outcomes.items() if v != 'uncovered'}
 changes = {k: [expected.get(k), actual.get(k)] for k in expected.keys() | actual.keys()
            if expected.get(k) != actual.get(k)}
 report = {
+    **revisions,
     'source': key,
     'elapsed': elapsed,
     'counts': {status: list(result.statuses.values()).count(status)
@@ -83,6 +97,7 @@ report = {
     'test_scope': 'full-suite' if args.full_suite else 'selected-specs',
     'max_workers': args.max_workers,
     'coverage_reuse': args.reuse,
+    'coverage_reused': cached is not None,
     'historical_file_seconds': args.historical_seconds,
     'speedup_vs_historical_file': args.historical_seconds / elapsed,
 }
