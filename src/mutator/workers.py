@@ -22,6 +22,7 @@ from threading import Lock
 from mutator.model import Site
 from mutator.runner import Command
 from mutator.sites import apply_site
+from mutator.timings import measure, record
 
 # Build output and the worker tree itself must not be shared. A link to
 # ``target`` would point a worker at the directory that contains the worker.
@@ -376,6 +377,7 @@ def _execute(
     destination.write_text(mutated, encoding="utf-8")
     try:
         result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
+        record("mutant", result.seconds)
     finally:
         destination.write_bytes(original)
     if result.launch_error is not None:
@@ -472,7 +474,8 @@ class WorkerBaselineError(RuntimeError):
 
 
 def _check_worker(directory, root, cwd, runner, command, timeout) -> None:
-    result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
+    with measure("worker-check"):
+        result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
     if result.launch_error is not None:
         raise result.launch_error
     if result.timed_out or result.code != 0:
@@ -508,9 +511,10 @@ def run_mutants(
     base = new_run_dir(root)
     try:
         relative = source.resolve().relative_to(root.resolve()).as_posix()
-        directories = create_workers(
-            base, root, relative, original, worker_count(len(sites), max_workers)
-        )
+        with measure("worker-prepare"):
+            directories = create_workers(
+                base, root, relative, original, worker_count(len(sites), max_workers)
+            )
         # Validate every pristine overlay before any mutation can earn a kill.
         with ThreadPoolExecutor(max_workers=len(directories)) as pool:
             checks = [pool.submit(_check_worker, directory, root, cwd, runner, command, timeout)

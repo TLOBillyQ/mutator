@@ -12,6 +12,7 @@ from mutator.model import FormResult, RunResult, Site
 from mutator.report import format_scan
 from mutator.runner import Command, CommandRunner, display_command, test_plan
 from mutator.workers import WorkerBaselineError, run_mutants
+from mutator.timings import measure
 
 
 def restore_backups(root: Path) -> list[Path]:
@@ -191,7 +192,8 @@ def _command_key(command: Command) -> tuple[str, ...]:
 def _remember_baseline(baselines, cache_key, runner, command: Command, cwd: Path) -> None:
     if cache_key in baselines:
         return
-    baseline = runner.run(command, cwd, None)
+    with measure("baseline"):
+        baseline = runner.run(command, cwd, None)
     if baseline.code != 0:
         tail = "\n".join(baseline.output.splitlines()[-20:])
         baselines[cache_key] = (False, baseline.seconds, tail)

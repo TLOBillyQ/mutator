@@ -12,6 +12,7 @@ from mutator.coverage import covered_lines
 from mutator.engine import mutate_file, restore_backups, scan_file
 from mutator.report import format_results, format_site_log
 from mutator.runner import CommandRunner
+from mutator import timings
 
 HELP = """\
 Usage: mutator [options] [path-or-filter ...]
@@ -64,6 +65,7 @@ Options:
                                 once. Default: one per core. The run uses the
                                 smaller of this limit, the cores, and the
                                 number of selected sites.
+  --timings                     Print phase totals and mean mutant duration.
   --verbose                     Print each test command and each mutant.
 
 Arguments:
@@ -127,6 +129,7 @@ class Options:
     max_workers: int | None = None
     changed: bool = False
     verbose: bool = False
+    timings: bool = False
 
 
 def _take(args: list[str], index: int, option: str) -> str:
@@ -229,6 +232,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 continue
             if arg == "--since-last-run":
                 options.since_last_run = True
+                index += 1
+                continue
+            if arg == "--timings":
+                options.timings = True
                 index += 1
                 continue
             if arg == "--verbose":
@@ -521,10 +528,16 @@ def run(argv: list[str] | None = None) -> int:
         return 0
     if not options.scan:
         _restore(root)
-    _prepare_coverage(options, root, files)
+    timings.reset()
+    with timings.measure("coverage"):
+        _prepare_coverage(options, root, files)
     if options.scan:
         return _scan(options, root, files)
-    return _mutate_files(options, root, files)
+    with timings.measure("mutation-run"):
+        code = _mutate_files(options, root, files)
+    if options.timings:
+        print(timings.summary(), file=sys.stderr, end="")
+    return code
 
 
 def main(argv: list[str] | None = None) -> None:
