@@ -95,4 +95,3 @@ Private raw JSON, stats, configuration, heap measurements and logs remain under
 `target/lua-perf/collector-memory/` in the profiling checkout. The harness does
 not generate LCOV or a normal reusable published index; consumers requiring
 coverage reuse must perform the normal collection/publication step first.
-
