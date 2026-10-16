@@ -364,7 +364,11 @@ def _execute(
     cwd: Path,
     timeout: float,
     file_key: str,
+    plans: dict[str, tuple[Command, float]] | None = None,
+    phase: str = "mutant",
 ) -> str:
+    if plans is not None:
+        command, timeout = plans.get(site.mutation_id, (command, timeout))
     current = original[site.start : site.end].decode("utf-8")
     if current != site.original:
         print(
@@ -374,10 +378,17 @@ def _execute(
         return "survived"
     destination = directory / relative
     mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
-    destination.write_text(mutated, encoding="utf-8")
+    destination.write_bytes(mutated.encode("utf-8"))
     try:
         result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
-        record("mutant", result.seconds)
+        record(phase, getattr(result, "seconds", 0.0))
+        if runner.verbose:
+            print(
+                f"result {phase} {file_key}:{site.line} {site.description}: "
+                f"{getattr(result, 'seconds', 0.0):.3f}s, "
+                f"exit={result.code}, timed_out={result.timed_out}",
+                file=sys.stderr,
+            )
     finally:
         destination.write_bytes(original)
     if result.launch_error is not None:
@@ -400,12 +411,21 @@ def _drain(
     cwd: Path,
     timeout: float,
     file_key: str,
+    plans: dict[str, tuple[Command, float]] | None,
+    checked_command: Command,
 ) -> None:
+    checked = {tuple(checked_command) if isinstance(checked_command, list) else checked_command}
     while True:
         try:
             site = pending.get_nowait()
         except Empty:
             return
+        if plans is not None:
+            selected_command, selected_timeout = plans.get(site.mutation_id, (command, timeout))
+            key = tuple(selected_command) if isinstance(selected_command, list) else selected_command
+            if key not in checked:
+                _check_worker(directory, root, cwd, runner, selected_command, selected_timeout)
+                checked.add(key)
         if runner.verbose:
             with lock:
                 _report(file_key, site)
@@ -420,6 +440,7 @@ def _drain(
             cwd,
             timeout,
             file_key,
+            plans,
         )
         with lock:
             outcomes[site.mutation_id] = status
@@ -441,6 +462,8 @@ def _run_all(
     cwd: Path,
     timeout: float,
     file_key: str,
+    plans: dict[str, tuple[Command, float]] | None,
+    checked_command: Command,
 ) -> None:
     pending: Queue = Queue()
     for site in sites:
@@ -462,6 +485,8 @@ def _run_all(
                 cwd,
                 timeout,
                 file_key,
+                plans,
+                checked_command,
             )
             for directory in directories
         ]
@@ -503,6 +528,11 @@ def run_mutants(
     timeout: float,
     file_key: str,
     outcomes: dict[str, str],
+    *,
+    plans: dict[str, tuple[Command, float]] | None = None,
+    check_command: Command | None = None,
+    check_timeout: float | None = None,
+    confirmation: tuple[Command, float] | None = None,
 ) -> None:
     """Mutate ``sites`` in parallel overlays of ``root``. The source stays put."""
 
@@ -517,14 +547,21 @@ def run_mutants(
             )
         # Validate every pristine overlay before any mutation can earn a kill.
         with ThreadPoolExecutor(max_workers=len(directories)) as pool:
-            checks = [pool.submit(_check_worker, directory, root, cwd, runner, command, timeout)
-                      for directory in directories]
+            checks = [
+                pool.submit(
+                    _check_worker, directory, root, cwd, runner,
+                    command if check_command is None else check_command,
+                    timeout if check_timeout is None else check_timeout,
+                )
+                for directory in directories
+            ]
             for check in checks:
                 check.result()
+        completed: dict[str, str] = {}
         _run_all(
             directories,
             sites,
-            outcomes,
+            completed,
             root,
             relative,
             original,
@@ -533,6 +570,25 @@ def run_mutants(
             cwd,
             timeout,
             file_key,
+            plans,
+            command if check_command is None else check_command,
         )
+        if confirmation is not None:
+            full_command, full_timeout = confirmation
+            survivors = [
+                site for site in sites
+                if completed.get(site.mutation_id) == "survived"
+                and (plans or {}).get(site.mutation_id, (command, timeout))[0] != full_command
+            ]
+            if survivors:
+                directory = directories[0]
+                _check_worker(directory, root, cwd, runner, full_command, full_timeout)
+                for site in survivors:
+                    completed[site.mutation_id] = _execute(
+                        directory, site, root, relative, original, runner,
+                        full_command, cwd, full_timeout, file_key,
+                        phase="survivor-confirmation",
+                    )
+        outcomes.update(completed)
     finally:
         delete_tree(base)

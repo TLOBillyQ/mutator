@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mutator.lua_coverage import LuaCoverageIndex
 
 from mutator.crapper_link import ensure_crapper
 from mutator.functions import form_digests, form_spans, sites_in_file
@@ -208,6 +212,50 @@ def _baseline_failure(file_key: str, command: Command, tail: str) -> RunResult:
     return RunResult(path=file_key, forms=[], written=[], baseline_failed=True, baseline_message=message)
 
 
+def _lua_plans(
+    index: LuaCoverageIndex,
+    path: Path,
+    selected: list[Site],
+    command: list[str],
+    timeout: float,
+    timeout_factor: float,
+    runner,
+    baselines,
+) -> tuple[dict[str, tuple[Command, float]], Command, float]:
+    plans = {}
+    subsets: dict[tuple[str, ...], tuple[Command, float] | None] = {}
+    union: set[str] = set()
+    full_suite = False
+    for site in selected:
+        specs = index.select(path, site.line)
+        key = tuple(specs or ())
+        if key and key not in subsets:
+            selected_command = [*command, *specs]
+            cache_key = (_command_key(selected_command), str(index.directory))
+            _remember_baseline(baselines, cache_key, runner, selected_command, index.directory)
+            ok, seconds, _tail = baselines[cache_key]
+            subsets[key] = (
+                selected_command,
+                max(2.0, index.seconds_for(specs) * timeout_factor, seconds * timeout_factor),
+            ) if ok else None
+        plan = subsets.get(key)
+        if plan is None:
+            plans[site.mutation_id] = (command, timeout)
+            full_suite = True
+            continue
+        union.update(specs)
+        plans[site.mutation_id] = plan
+    if full_suite:
+        return plans, index.command, timeout
+    specs = sorted(union)
+    check_timeout = max(
+        2.0, index.seconds_for(specs) * timeout_factor,
+        sum(baselines[(_command_key(plan[0]), str(index.directory))][1]
+            for plan in subsets.values() if plan is not None) * timeout_factor,
+    )
+    return plans, [*command, *specs], check_timeout
+
+
 def _apply_selected(
     path,
     root,
@@ -222,16 +270,30 @@ def _apply_selected(
     outcomes,
     max_workers,
     busted_task,
+    lua_coverage=None,
 ) -> RunResult | None:
     if not selected:
         return None
-    command, cwd = test_plan(root, path, language, test_command, busted_task)
+    standard_lua = language == "lua" and not test_command
+    if standard_lua and lua_coverage is not None:
+        command, cwd = lua_coverage.command, lua_coverage.directory
+    else:
+        command, cwd = test_plan(root, path, language, test_command, busted_task)
     cache_key = (_command_key(command), str(cwd))
     _remember_baseline(baselines, cache_key, runner, command, cwd)
     ok, seconds, tail = baselines[cache_key]
     if not ok:
         return _baseline_failure(file_key, command, tail)
     timeout = max(2.0, seconds * timeout_factor)
+    plans = None
+    check_command, check_timeout = command, timeout
+    if standard_lua:
+        command = [*command, "--no-keep-going"]
+        if lua_coverage is not None:
+            plans, check_command, check_timeout = _lua_plans(
+                lua_coverage, path, selected, command, timeout, timeout_factor, runner, baselines
+            )
+    confirmation = (command, timeout) if standard_lua and lua_coverage is not None else None
     try:
         run_mutants(
             root,
@@ -245,6 +307,10 @@ def _apply_selected(
             timeout,
             file_key,
             outcomes,
+            plans=plans,
+            check_command=check_command,
+            check_timeout=check_timeout,
+            confirmation=confirmation,
         )
     except WorkerBaselineError as error:
         return _baseline_failure(file_key, command, str(error))
@@ -281,6 +347,7 @@ def mutate_file(
     baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str]],
     max_workers: int | None = None,
     busted_task: str | None = None,
+    lua_coverage: LuaCoverageIndex | None = None,
 ) -> RunResult:
     """Mutate one file and write its namespaces into `.metrics/mutate`."""
 
@@ -317,6 +384,7 @@ def mutate_file(
         outcomes,
         max_workers,
         busted_task,
+        lua_coverage,
     )
     if failure is not None:
         return failure
@@ -330,6 +398,31 @@ def mutate_file(
         sites=found,
         statuses=_statuses(found, covered, outcomes),
     )
+
+
+def needs_mutation(
+    path: Path, root: Path, *, mutate_all: bool = False, lines: set[int] | None = None,
+) -> bool:
+    """Prove an unchanged, fully killed selection needs no coverage or tests.
+
+    Treat every site as covered so a previous coverage gap cannot be silently
+    carried forward. Empty files still take the normal snapshot publication path.
+    """
+
+    decoded = _decode(path)
+    if decoded is None:
+        return True
+    _original, source = decoded
+    file_key = source_key(path, root)
+    sites = sites_in_file(source, path, root, file_key)
+    history = load_history(root, file_key)
+    if not sites or not history.forms:
+        return True
+    digests = form_digests(source, path, root)
+    if digests != {key: prior.digest for key, prior in history.forms.items()}:
+        return True
+    return bool(_select(sites, {site.mutation_id: True for site in sites},
+                        history, digests, mutate_all, lines))
 
 
 def scan_file(
