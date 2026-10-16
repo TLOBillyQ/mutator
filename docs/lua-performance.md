@@ -150,6 +150,9 @@ It does not isolate the effect of fail-fast or worker count.
 
 ## Remaining work
 
+Tracked as qinyuanj/mutator#10 (worker reuse), #11 (collector memory) and
+#12 (selected-spec timing).
+
 A 5× end-to-end improvement has not been demonstrated. Preserve full-suite
 semantics when investigating Busted's spec loading and auto-insulation costs;
 changing isolation is a behavioral change. Larger worker counts are not assumed
