@@ -143,9 +143,10 @@ For a named task already defined in your project's `.busted`, select it with:
 The generated Lua command adds `--run fast` to both the baseline and every
 mutant while keeping the native interpreter and LuaRocks module-path setup.
 Task definitions belong to the consuming project. `--busted-task` affects Lua
-tests only; coverage commands and tests in other languages keep their existing
-plans. Supply coverage for the selected test set with `--use-existing-coverage`,
-or use `--no-coverage` to mutate every site.
+tests only. Lua spec coverage is collected for that same task; coverage commands
+and tests in other languages keep their existing plans. Custom coverage commands
+and `--full-suite` retain crapper's ordinary coverage path. Use `--no-coverage`
+to mutate every site without selecting tests by coverage.
 
 Combining `--busted-task` with `--test-command` is a usage error (exit `1`).
 For a custom command, include task selection yourself, for example
@@ -153,7 +154,49 @@ For a custom command, include task selection yourself, for example
 When changing test tasks, use `--mutate-all` to recompute outcomes previously
 killed under a different test set.
 
-Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
+Lua runs collect line coverage and spec-file membership in a single Busted +
+LuaCov run. Each mutant then runs only the spec files that covered its line,
+with Busted's `--no-keep-going` to skip later tests after a failure. Busted's
+auto-insulation remains enabled. Lines executed outside a spec file, such as
+module initialization in a helper, fall back to the full suite. Unknown
+membership also falls back to the full suite. `--full-suite` disables selection;
+custom `--test-command` strings are never rewritten. A mutant that survives its
+selected tests is confirmed against the full suite before it is recorded as
+survived: execution coverage cannot detect an assertion in another spec that
+observes shared state written by the selected spec.
+
+Each distinct selected command must also pass on pristine source; a failing
+subset falls back to the full suite. These checks are cached for the run and
+provide a measured lower bound for its timeout. Coverage timing includes shared
+suite startup as well as spec time, so helper and interpreter startup are not
+lost from a short plan's timeout.
+
+Every pristine worker is checked before any mutant runs. For selected Lua tests,
+the check uses the union of the spec files needed by that source's mutants. If
+any mutant needs the full suite, the worker check uses the full suite too. Each
+worker also checks a distinct selected command on pristine source before first
+using it; those checks are cached within that worker. A failing worker check
+stops publication for that source.
+Selected mutants use the larger of `max(2 seconds, --timeout-factor × (shared
+suite overhead + selected spec wall times))` and the measured pristine selected
+command's timeout. Coverage times are measured during collection and include
+coverage overhead. Full-suite mutants retain the ordinary baseline timeout.
+
+The spec index is stored next to the managed LuaCov stats and LCOV report under
+`target/coverage/lua`. Normal runs rebuild it. `--reuse-coverage` (also
+`--use-existing-coverage`) reuses a valid index for the same Busted task and
+command; a missing or invalid index triggers fresh collection. Explicit reuse
+can use stale source coverage. Use fresh coverage after changing source or tests.
+
+`--timings` prints coverage, baseline, worker preparation, worker checks and
+mutant totals, followed by the mutation run's wall time. Concurrent worker
+phase totals sum thread time and can exceed elapsed wall time. An unchanged
+selection containing only previously killed mutants skips coverage and keeps
+the existing snapshots. Survivors continue to run on each invocation.
+
+For other languages, coverage is generated with crapper's commands unless
+`--use-existing-coverage` or `--no-coverage` is set. A file missing from the report
+is treated as uncovered, and the run says so.
 
 ## Windows
 

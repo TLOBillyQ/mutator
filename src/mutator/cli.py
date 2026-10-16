@@ -51,9 +51,9 @@ Options:
   --test-command <cmd>          Run this command for the baseline and every
                                 mutant. The working directory is the project
                                 root. Cannot be combined with --busted-task.
-  --busted-task <name>          Select a named task in .busted for the Lua
-                                baseline and every mutant (for example, fast).
-                                Other languages and coverage are unchanged.
+  --busted-task <name>          Select a named task in .busted for Lua tests
+                                and spec-file coverage (for example, fast).
+                                Other languages are unchanged.
                                 Cannot be combined with --test-command; put
                                 --run <name> in your custom command instead.
   --timeout-factor <number>     Mutant timeout, as a multiple of the baseline
@@ -65,6 +65,8 @@ Options:
                                 once. Default: one per core. The run uses the
                                 smaller of this limit, the cores, and the
                                 number of selected sites.
+  --full-suite                  Disable Lua spec-file selection; run all tests
+                                for every mutant.
   --timings                     Print phase totals and mean mutant duration.
   --verbose                     Print each test command and each mutant.
 
@@ -130,6 +132,7 @@ class Options:
     changed: bool = False
     verbose: bool = False
     timings: bool = False
+    full_suite: bool = False
 
 
 def _take(args: list[str], index: int, option: str) -> str:
@@ -232,6 +235,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 continue
             if arg == "--since-last-run":
                 options.since_last_run = True
+                index += 1
+                continue
+            if arg == "--full-suite":
+                options.full_suite = True
                 index += 1
                 continue
             if arg == "--timings":
@@ -385,13 +392,27 @@ def select_files(options: Options) -> list[Path]:
     return sorted(set(_inside_root(_matching(files, filters), root)), key=lambda item: item.as_posix())
 
 
-def _prepare_coverage(options: Options, root: Path, files: list[Path]) -> None:
-    if options.no_coverage or options.use_existing_coverage:
-        return
-    if options.scan:
-        return
+def _prepare_coverage(options: Options, root: Path, files: list[Path]) -> dict:
+    if options.no_coverage or options.scan:
+        return {}
     crapper = ensure_crapper()
-    crapper.runners.run_coverage(root, files, options.coverage_command)
+    indexes = {}
+    remaining = files
+    if not (options.full_suite or options.test_command or options.coverage_command):
+        from mutator.lua_coverage import collect
+
+        lua_files = [path for path in files if path.suffix == ".lua"]
+        for directory in crapper.runners.lua_roots(root, lua_files):
+            source = next(path for path in lua_files
+                          if crapper.runners.lua_roots(root, [path])[0] == directory)
+            indexes[directory] = collect(
+                root, source, busted_task=options.busted_task,
+                reuse=options.use_existing_coverage, verbose=options.verbose,
+            )
+        remaining = [path for path in files if path.suffix != ".lua"]
+    if not options.use_existing_coverage and (remaining or not files):
+        crapper.runners.run_coverage(root, remaining, options.coverage_command)
+    return indexes
 
 
 def _coverage_for(options: Options, root: Path, path: Path) -> set[int] | None:
@@ -462,7 +483,7 @@ def _finish(baseline_failed: bool, survived: bool) -> int:
     return 0
 
 
-def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
+def _mutate_files(options: Options, root: Path, files: list[Path], indexes: dict | None = None) -> int:
     runner = CommandRunner(verbose=options.verbose)
     baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str]] = {}
     forms = []
@@ -470,6 +491,10 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
     baseline_failed = False
     survived = False
     for path in files:
+        index = None
+        if indexes and path.suffix == ".lua":
+            directory = ensure_crapper().runners.lua_roots(root, [path])[0]
+            index = indexes.get(directory)
         result = mutate_file(
             path,
             root,
@@ -484,6 +509,7 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             baselines=baselines,
             max_workers=options.max_workers,
             busted_task=options.busted_task,
+            lua_coverage=index,
         )
         outcome = _record(result, forms, written)
         if outcome == "baseline":
@@ -528,13 +554,19 @@ def run(argv: list[str] | None = None) -> int:
         return 0
     if not options.scan:
         _restore(root)
+        from mutator.engine import needs_mutation
+
+        if not any(needs_mutation(path, root, mutate_all=options.mutate_all, lines=options.lines)
+                   for path in files):
+            print("No mutations selected; keeping the previous snapshots.")
+            return 0
     timings.reset()
     with timings.measure("coverage"):
-        _prepare_coverage(options, root, files)
+        indexes = _prepare_coverage(options, root, files)
     if options.scan:
         return _scan(options, root, files)
     with timings.measure("mutation-run"):
-        code = _mutate_files(options, root, files)
+        code = _mutate_files(options, root, files, indexes)
     if options.timings:
         print(timings.summary(), file=sys.stderr, end="")
     return code
