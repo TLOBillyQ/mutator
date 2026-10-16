@@ -158,10 +158,12 @@ semantics when investigating Busted's spec loading and auto-insulation costs;
 changing isolation is a behavioral change. Larger worker counts are not assumed
 to improve throughput on the measured six-core host.
 
-The root baseline is cached across files within a run, but worker overlays and
-pristine worker checks are still created per source file. Reusing workers could
-amortize this cost, but would require a separately validated restoration and
-per-file binding protocol; it is not implemented here.
+The root baseline is cached across files within a run. Default Lua runs now
+also retain workers across files, with fixed private source bindings and
+restoration validation before reuse and publication. See
+[`lua-worker-reuse.md`](lua-worker-reuse.md) for the validation boundary and the
+multi-file acceptance command. The measurements above predate worker reuse and
+remain a one-file reference.
 
 Profile collector memory before changing its representation again. Integer
 membership bitsets or immutable interned memberships may reduce overhead, but
