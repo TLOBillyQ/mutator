@@ -202,7 +202,8 @@ def test_failed_copy_or_runtime_removes_workers(monkeypatch, tmp_path, stage):
                         CommandRunner(), command, tmp_path, .2, "src/value.py", outcomes)
     else:
         run_mutants(tmp_path, source, source.read_bytes(), [site], 1,
-                    CommandRunner(), command, tmp_path, .2, "src/value.py", outcomes)
+                    CommandRunner(), command, tmp_path, .2, "src/value.py", outcomes,
+                    check_timeout=5.0)
         assert outcomes == {"two": "killed"}
     assert source.read_bytes() == b"value = 1\n"
     assert (tmp_path / "assets" / "data.txt").read_text() == "original"
