@@ -144,6 +144,36 @@ def test_a_failed_baseline_does_not_rewrite_metrics(tmp_path):
     assert not snapshot_path(tmp_path, "demo").exists()
 
 
+def test_a_baseline_that_ran_no_tests_fails(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+
+    class Empty:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            output = "\n----------------------------------------------------------------------\nRan 0 tests in 0.000s\n\nOK\n"
+            return CommandResult(code=0, timed_out=False, seconds=0.01, output=output)
+
+    result = mutate_file(
+        path,
+        tmp_path,
+        runner=Empty(),
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+    )
+    assert result.baseline_failed
+    assert "Ran 0 tests" in result.baseline_message
+    assert not snapshot_path(tmp_path, "demo").exists()
+
+
 @pytest.mark.parametrize("timed_out", [False, True])
 def test_failed_pristine_worker_baseline_preserves_metrics(tmp_path, timed_out):
     path = tmp_path / "src" / "demo.py"

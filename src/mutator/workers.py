@@ -20,7 +20,7 @@ from queue import Empty, Queue
 from threading import Lock
 
 from mutator.model import Site
-from mutator.runner import Command
+from mutator.runner import Command, run_tests
 from mutator.sites import apply_site
 from mutator.timings import measure, record
 
@@ -380,7 +380,7 @@ def _execute(
     mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
     destination.write_bytes(mutated.encode("utf-8"))
     try:
-        result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
+        result = run_tests(runner, command, mapped_cwd(directory, root, cwd), timeout)
         record(phase, getattr(result, "seconds", 0.0))
         if runner.verbose:
             print(
@@ -507,7 +507,7 @@ class WorkerBaselineError(RuntimeError):
 
 def _check_worker(directory, root, cwd, runner, command, timeout) -> None:
     with measure("worker-check"):
-        result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
+        result = run_tests(runner, command, mapped_cwd(directory, root, cwd), timeout)
     if result.launch_error is not None:
         raise result.launch_error
     if result.timed_out or result.code != 0:

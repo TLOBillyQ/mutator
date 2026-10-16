@@ -158,6 +158,11 @@ def test_python_commands(tmp_path):
     (conf / "conftest.py").write_text("", encoding="utf-8")
     assert _python_command(conf)[-2:] == ["-m", "pytest"]
 
+    nested = tmp_path / "nested"
+    (nested / "tests").mkdir(parents=True)
+    (nested / "tests" / "conftest.py").write_text("", encoding="utf-8")
+    assert _python_command(nested)[-2:] == ["-m", "pytest"]
+
 
 def test_a_baseline_run_uses_a_dependency_installed_only_in_the_project_venv(tmp_path):
     """Issue #3 AC5: the baseline runs on the project venv's interpreter.

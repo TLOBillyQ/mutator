@@ -255,6 +255,30 @@ class CommandRunner:
         return CommandResult(code=code, timed_out=timed_out, seconds=seconds, output=output or "")
 
 
+def build_command(command: Command) -> Command | None:
+    """The compile step that a generated test command performs before its tests."""
+
+    if isinstance(command, list) and command[:2] == ["cargo", "test"]:
+        return ["cargo", "test", "--no-run", *command[2:]]
+    return None
+
+
+def run_tests(runner, command: Command, cwd: Path, timeout: float | None) -> CommandResult:
+    """Build untimed, then time only the tests.
+
+    The timeout is a multiple of a warm baseline. A worker's first cargo build
+    is cold, and charging it to the timeout turns survivors into kills. A build
+    that fails still fails the command.
+    """
+
+    build = build_command(command)
+    if build is not None:
+        built = runner.run(build, cwd, None)
+        if built.launch_error is not None or built.code != 0:
+            return built
+    return runner.run(command, cwd, timeout)
+
+
 def nearest(start: Path, marker: str, stop: Path) -> Path | None:
     current = start if start.is_dir() else start.parent
     stop = stop.resolve()
@@ -311,6 +335,8 @@ def _python_command(directory: Path) -> list[str]:
     if (
         (directory / "pytest.ini").is_file()
         or (directory / "conftest.py").is_file()
+        or (directory / "tests" / "conftest.py").is_file()
+        or (directory / "test" / "conftest.py").is_file()
         or "pytest" in pyproject
         or (directory / "setup.cfg").is_file() and "pytest" in _read(directory / "setup.cfg")
     ):
