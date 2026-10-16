@@ -368,6 +368,8 @@ def mutate_file(
     history = load_history(root, file_key)
     digests = form_digests(source, path, root)
     selected = _select(found, covered, history, digests, mutate_all, lines)
+    if language == "lua" and not test_command:
+        selected.sort(key=lambda site: history.outcomes.get(site.mutation_id) != "survived")
     outcomes = _carry_forward(found, covered, history, digests)
     _warn_many(file_key, selected, mutation_warning)
     failure = _apply_selected(
