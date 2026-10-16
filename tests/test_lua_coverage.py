@@ -193,6 +193,81 @@ def test_reuse_rejects_mismatched_artifacts_and_invalid_overhead(project, toolch
     assert load(root, source) is None
 
 
+def test_compact_publication_uses_ids_and_rejects_old_or_invalid_ids(project, toolchain):
+    root, source = project
+    collect(root, source)
+    cache = toolchain._coverage_report(root, root, "lua").parent / "spec-coverage.json"
+    original = cache.read_text(encoding="utf-8")
+    raw = json.loads(original)
+    assert raw["version"] == 2
+    assert raw["specIds"] == sorted(raw["specs"])
+    memberships = [members for covered in raw["lines"].values() for members in covered.values()]
+    assert memberships and all(type(member) is int for members in memberships for member in members)
+    source_lines = next(covered for name, covered in raw["lines"].items() if Path(name).resolve() == source.resolve())
+    for bad in ([True], [-1], [len(raw["specIds"])], [0, 0], ["spec/first_spec.lua"]):
+        source_lines["3"] = bad
+        cache.write_text(json.dumps(raw), encoding="utf-8")
+        assert load(root, source) is None
+    raw = json.loads(original)
+    raw["version"] = 1
+    cache.write_text(json.dumps(raw), encoding="utf-8")
+    assert load(root, source) is None
+
+
+def test_preloaded_function_and_coroutine_survive_segment_resets(project, toolchain):
+    root, source = project
+    (root / "helper.lua").write_text(
+        "local calc = require('calc')\n"
+        "shared_calc = calc\n"
+        "shared_coroutine = coroutine.create(function()\n"
+        "  calc.first(); coroutine.yield(); calc.first()\n"
+        "end)\n", encoding="utf-8",
+    )
+    (root / ".busted").write_text(
+        "return { default = {lpath = 'src/?.lua', helper = 'helper.lua', ['sort-files'] = true} }\n",
+        encoding="utf-8",
+    )
+    for name in ("first", "second"):
+        (root / "spec" / f"{name}_spec.lua").write_text(
+            "it('shared', function()\n"
+            "  assert(coroutine.resume(shared_coroutine))\n"
+            "  require('luacov.runner').save_stats()\n"
+            "  assert.equal(11, shared_calc.first())\n"
+            "end)\n", encoding="utf-8",
+        )
+    index = collect(root, source)
+    assert index.select(source, 3) == ["spec/first_spec.lua", "spec/second_spec.lua"]
+    stats = toolchain._coverage_report(root, root, "lua").parent / "luacov.stats.out"
+    rows = stats.read_text(encoding="utf-8").splitlines()
+    counts = next(rows[n + 1].split() for n, row in enumerate(rows) if row.endswith("calc.lua"))
+    assert int(counts[2]) == 4
+
+
+def test_tick_saves_preserve_segments_and_hook(project, toolchain):
+    root, source = project
+    (root / "helper.lua").write_text(
+        "local runner = require('luacov.runner')\n"
+        "runner.tick = true\n"
+        "runner.configuration.savestepsize = 10000\n", encoding="utf-8",
+    )
+    (root / ".busted").write_text(
+        "return { default = {lpath = 'src/?.lua', helper = 'helper.lua'} }\n", encoding="utf-8",
+    )
+    (root / "spec" / "first_spec.lua").write_text(
+        "local calc = require('calc')\n"
+        "it('tick saves', function()\n"
+        "  for _ = 1, 12000 do assert.equal(11, calc.first()) end\n"
+        "end)\n", encoding="utf-8",
+    )
+    index = collect(root, source)
+    assert index.select(source, 3) == ["spec/first_spec.lua"]
+    assert index.select(source, 6) == ["spec/second_spec.lua"]
+    stats = toolchain._coverage_report(root, root, "lua").parent / "luacov.stats.out"
+    rows = stats.read_text(encoding="utf-8").splitlines()
+    counts = next(rows[n + 1].split() for n, row in enumerate(rows) if row.endswith("calc.lua"))
+    assert int(counts[2]) == 12000
+
+
 def test_nested_coroutines_and_explicit_stats_save_retain_aggregate(project, toolchain):
     root, source = project
     (root / "spec" / "first_spec.lua").write_text(
@@ -244,15 +319,16 @@ def test_index_is_exact_and_fallback_dominates(tmp_path):
 def test_unproven_attribution_forces_fallback(project):
     root, source = project
     raw = {
-        "version": 1, "complete": True, "unsafe": True,
+        "version": 2, "complete": True, "unsafe": True,
         "specs": {"spec/first_spec.lua": 0.1},
-        "lines": {"src/calc.lua": {"3": {"spec/first_spec.lua": True}}},
+        "specIds": ["spec/first_spec.lua"],
+        "lines": {"src/calc.lua": {"3": [0]}},
         "fallback": {},
     }
     index = _decode(raw, root, [], published=False)
     assert index.select(source, 3) is None
     raw["unsafe"] = False
-    raw["lines"]["src/calc.lua"]["3"] = {"unseen_spec.lua": True}
+    raw["lines"]["src/calc.lua"]["3"] = [1]
     with pytest.raises(ValueError, match="Invalid spec membership"):
         _decode(raw, root, [], published=False)
 

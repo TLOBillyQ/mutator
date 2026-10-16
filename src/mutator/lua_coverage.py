@@ -13,7 +13,7 @@ from mutator.crapper_link import ensure_crapper
 from mutator.runner import CommandRunner, test_plan
 
 
-_VERSION = 1
+_VERSION = 2
 
 
 def _canonical(path: Path) -> str:
@@ -91,6 +91,11 @@ def _decode(raw: dict, directory: Path, command: list[str], *, published: bool) 
         specs[relative] = specs.get(relative, 0.0) + _seconds(elapsed)
     if not specs:
         raise ValueError("Busted did not complete any spec files")
+    ids = raw.get("specIds")
+    if (not isinstance(ids, list) or not all(isinstance(name, str) and name in names for name in ids)
+            or len(ids) != len(names) or len(set(ids)) != len(ids)):
+        raise ValueError("Invalid spec ID table")
+    spec_ids = [names[name] for name in ids]
 
     def source_key(name):
         if not isinstance(name, str) or not name:
@@ -104,15 +109,11 @@ def _decode(raw: dict, directory: Path, command: list[str], *, published: bool) 
     for name, covered in _mapping(raw.get("lines")).items():
         target = lines.setdefault(source_key(name), {})
         for number, members in _mapping(covered).items():
-            if published:
-                if not isinstance(members, list) or not members or not all(isinstance(s, str) and s in specs for s in members):
-                    raise ValueError("Invalid cached spec membership")
-                selected = set(members)
-            else:
-                members = _mapping(members)
-                if not members or any(s not in names or hit is not True for s, hit in members.items()):
-                    raise ValueError("Invalid spec membership")
-                selected = {names[s] for s in members}
+            if (not isinstance(members, list) or not members
+                    or any(type(member) is not int or not 0 <= member < len(spec_ids) for member in members)
+                    or len(set(members)) != len(members)):
+                raise ValueError("Invalid spec membership")
+            selected = {spec_ids[member] for member in members}
             target.setdefault(_line(number), set()).update(selected)
     fallback: dict[str, set[int]] = {}
     for name, covered in _mapping(raw.get("fallback")).items():
@@ -231,17 +232,20 @@ def collect(
             for number, (hits, _total) in covered.items():
                 if hits > 0 and not index.lines.get(key, {}).get(number):
                     index.fallback.setdefault(key, set()).add(number)
+        spec_ids = sorted(index.specs)
+        spec_numbers = {name: number for number, name in enumerate(spec_ids)}
         encoded = {
             "version": _VERSION, "complete": True,
             "identity": _identity(root, directory, command, busted_task),
             "specs": index.specs,
+            "specIds": spec_ids,
             "overhead": index.overhead,
             "artifacts": {"lcov": _artifact_hash(report), "stats": _artifact_hash(stats)},
-            "lines": {name: {str(n): sorted(members) for n, members in covered.items()}
+            "lines": {name: {str(n): sorted(spec_numbers[member] for member in members) for n, members in covered.items()}
                       for name, covered in index.lines.items()},
             "fallback": {name: sorted(covered) for name, covered in index.fallback.items()},
         }
-        pending.write_text(json.dumps(encoded, ensure_ascii=False), encoding="utf-8")
+        pending.write_text(json.dumps(encoded, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         pending.replace(publication)
     except Exception:
         pending.unlink(missing_ok=True)
