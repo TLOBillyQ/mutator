@@ -29,6 +29,7 @@ class Runner:
         self.calls = []
         self.corrupt = False
         self.fail = False
+        self.remove = None
 
     def run(self, command, cwd, timeout):
         values = [(cwd / "src" / name).read_bytes() for name in ("a.lua", "b.lua")]
@@ -38,6 +39,11 @@ class Runner:
             return CommandResult(0, False, .01, "")
         if self.fail:
             raise OSError("runner broke")
+        if self.remove:
+            (cwd / "src" / "a.lua").unlink()
+            if self.remove == "directory":
+                (cwd / "src" / "b.lua").unlink()
+                (cwd / "src").rmdir()
         if self.corrupt:
             # A mutant can appear killed by corrupting a different private file.
             (cwd / "src" / "b.lua").write_bytes(b"broken\n")
@@ -94,6 +100,38 @@ def test_failed_worker_publishes_no_outcomes_and_poisoned_pool(tmp_path, failure
         assert pool.failed
         with pytest.raises(WorkerBaselineError):
             run(tmp_path, sources[1], Runner(), pool)
+    assert all(source.read_bytes() == b"return 1\n" for source in sources)
+
+
+@pytest.mark.parametrize("failure", ["corrupt", "file", "directory"])
+def test_engine_worker_failure_preserves_previous_snapshot(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+    from mutator import engine
+    from mutator.model import History
+    sources = fixture(tmp_path)
+    snapshot = tmp_path / ".metrics" / "mutate" / "old.edn"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_bytes(b"previous snapshot\n")
+    monkeypatch.setattr(engine, "ensure_crapper", lambda: SimpleNamespace(
+        discover=SimpleNamespace(language_of=lambda path: "lua")))
+    monkeypatch.setattr(engine, "sites_in_file", lambda *args: [site(sources[0], 3)])
+    monkeypatch.setattr(engine, "form_digests", lambda *args: {})
+    monkeypatch.setattr(engine, "load_history", lambda *args: History({}, {}))
+    monkeypatch.setattr(engine, "test_plan", lambda *args: (["suite"], tmp_path))
+    published = []
+    monkeypatch.setattr(engine, "write_results", lambda *args: published.append(args))
+    runner = Runner()
+    runner.corrupt = failure == "corrupt"
+    runner.remove = None if failure == "corrupt" else failure
+    with WorkerPool(tmp_path, sources) as pool:
+        result = engine.mutate_file(
+            sources[0], tmp_path, runner=runner, covered_lines={1}, ignore_coverage=False,
+            mutate_all=True, lines=None, test_command=None, timeout_factor=10,
+            mutation_warning=50, baselines={}, max_workers=1, worker_pool=pool)
+    assert result.baseline_failed
+    assert result.written == []
+    assert not published
+    assert snapshot.read_bytes() == b"previous snapshot\n"
     assert all(source.read_bytes() == b"return 1\n" for source in sources)
 
 

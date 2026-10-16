@@ -395,11 +395,17 @@ def _execute(
                 file=sys.stderr,
             )
     finally:
-        if validate is not None and any(
-            _is_link(path) for path in (destination, *destination.parents)
-            if path == directory or directory in path.parents
-        ):
-            raise WorkerBaselineError(f"Worker source binding replaced in {directory}")
+        if validate is not None:
+            try:
+                replaced = any(
+                    _is_link(path) for path in (destination, *destination.parents)
+                    if path == directory or directory in path.parents
+                )
+            except FileNotFoundError as error:
+                raise WorkerBaselineError(
+                    f"Worker source binding removed in {directory}") from error
+            if replaced:
+                raise WorkerBaselineError(f"Worker source binding replaced in {directory}")
         destination.write_bytes(original)
     if validate is not None:
         validate(directory)
@@ -546,6 +552,7 @@ def _check_worker(directory, root, cwd, runner, command, timeout) -> None:
 def _worker_state(directory: Path, *, project=False) -> dict[str, tuple[str, bytes | str]]:
     """Fingerprint private data and link bindings without following directory links."""
     state = {}
+
     def visit(folder):
         for path in folder.iterdir():
             if project and (path.name in SKIP_LINK or path.name in {"node_modules", ".claude", ".agents"}):
@@ -562,6 +569,7 @@ def _worker_state(directory: Path, *, project=False) -> dict[str, tuple[str, byt
                 visit(path)
             else:
                 state[key] = ("file", hashlib.sha256(path.read_bytes()).digest())
+
     visit(directory)
     return state
 
