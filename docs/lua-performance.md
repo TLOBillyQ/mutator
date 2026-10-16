@@ -117,9 +117,12 @@ completed in approximately two seconds, while others required approximately
 116 seconds each. Fail-fast benefits depend on where failure occurs in the
 existing suite order.
 
-The reserved-first worker change requires separate real-project timing for
-opted-in spec selection; the interrupted selection benchmark imported the
-preceding version.
+The completed opted-in selected-spec run took 1,847.968 seconds and matched all
+35 historical outcomes: 31 killed, three survived and one uncovered. It did not
+meet the 5x goal. It imported `adc4d34`, rebuilt coverage despite requesting reuse,
+and ran while project inputs changed and concurrent load was present. See
+[`lua-selected-specs.md`](lua-selected-specs.md) for timings and provenance limits;
+this measurement does not establish a controlled selection speedup.
 
 ## Reproduction
 
@@ -150,8 +153,10 @@ It does not isolate the effect of fail-fast or worker count.
 
 ## Remaining work
 
-Tracked as qinyuanj/mutator#10 (worker reuse), #11 (collector memory) and
-#12 (selected-spec timing).
+Remaining real-project acceptance work is tracked as qinyuanj/mutator#10 (worker
+reuse) and #11 (collector memory). Issue #12 (selected-spec timing) has a
+[completed measurement](lua-selected-specs.md), with outcome parity and no
+measured speedup against the historical interval.
 
 A 5× end-to-end improvement has not been demonstrated. Preserve full-suite
 semantics when investigating Busted's spec loading and auto-insulation costs;
