@@ -53,7 +53,14 @@ def toolchain(request, monkeypatch):
     else:
         # A local rock tree can provide the optional native hook without
         # changing or executing any project that owns that tree.
-        tree = Path(__file__).resolve().parents[2] / "monopoly" / ".toolcache" / "luarocks"
+        checkout = Path(__file__).resolve().parents[1]
+        git_pointer = checkout / '.git'
+        if git_pointer.is_file():
+            git_directory = Path(git_pointer.read_text(encoding='utf-8').strip().removeprefix('gitdir: '))
+            if not git_directory.is_absolute():
+                git_directory = checkout / git_directory
+            checkout = git_directory.resolve().parents[2]
+        tree = checkout.parent / "monopoly" / ".toolcache" / "luarocks"
         if tree.is_dir():
             setup += f"package.path = {json.dumps(tree.as_posix() + '/share/lua/5.4/?.lua;')} .. package.path; "
             extension = "dll" if os.name == "nt" else "so"
@@ -331,6 +338,110 @@ def test_unproven_attribution_forces_fallback(project):
     raw["lines"]["src/calc.lua"]["3"] = [1]
     with pytest.raises(ValueError, match="Invalid spec membership"):
         _decode(raw, root, [], published=False)
+
+
+def _profile_collector(toolchain, tmp_path, collector=None, line_count=128, spec_count=80):
+    """Isolate retained memberships and publication from Busted/project memory."""
+    collector = collector or Path(__file__).parents[1] / "src" / "mutator" / "lua_coverage.lua"
+    destination = tmp_path / "synthetic.json"
+    script = tmp_path / "profile.lua"
+    script.write_text("""
+local collector, destination, line_count, spec_count = ...
+line_count, spec_count = tonumber(line_count), tonumber(spec_count)
+local callbacks = {}
+local runner = {data = {}, initialized = true, configuration = {statsfile = 'unused'}}
+runner.file_included = function() return true end
+runner.shutdown = function() runner.save_stats() end
+package.loaded['luacov.runner'] = runner
+package.loaded['luacov.stats'] = {save = function() end}
+package.loaded['busted.core'] = function()
+  return {
+    monotime = os.clock,
+    subscribe = function(event, callback) callbacks[event[2]] = callback end,
+  }
+end
+local finish = assert(loadfile(collector))()(destination)
+require('busted.core')()
+local peak = collectgarbage('count')
+local function sample()
+  peak = math.max(peak, collectgarbage('count'))
+end
+local function counters(id)
+  local file = {}
+  for line = 1, line_count do
+    if line % 3 == 0 or id % 17 == line % 17 then file[line] = 1 end
+  end
+  runner.data['src/synthetic.lua'] = file
+end
+-- Outside-spec and unknown lines must remain distinct in the publication.
+runner.data['src/synthetic.lua'] = {[line_count + 1] = 1, [3] = 1}
+for id = 0, spec_count - 1 do
+  local file = {name = 'spec/' .. id .. '.lua'}
+  callbacks.start(file)
+  counters(id)
+  runner.save_stats()
+  counters(id)
+  callbacks['end'](file)
+  sample()
+end
+-- A repeated spec keeps its original ID and does not duplicate memberships.
+callbacks.start({name = 'spec/0.lua'})
+counters(0)
+callbacks['end']({name = 'spec/0.lua'})
+sample()
+local retained = collectgarbage('count')
+local open = io.open
+io.open = function(...)
+  local file = assert(open(...))
+  return {
+    write = function(_, value) sample(); return file:write(value) end,
+    close = function() sample(); return file:close() end,
+  }
+end
+finish()
+sample()
+print(string.format('retained_kib=%.1f peak_kib=%.1f', retained, peak))
+""", encoding="utf-8")
+    lua = toolchain.lua_interpreter()
+    setup = toolchain._lua_package_setup(lua)
+    result = CommandRunner().run(
+        [lua, "-e", setup + "assert(loadfile(arg[1]))(table.unpack(arg, 2))",
+         "--", str(script), str(collector), str(destination), str(line_count), str(spec_count)],
+        tmp_path, 30,
+    )
+    assert result.code == 0, result.output
+    return json.loads(destination.read_text(encoding="utf-8")), result.output
+
+
+def test_packed_memberships_cross_byte_and_word_boundaries(tmp_path, toolchain):
+    raw, _memory = _profile_collector(toolchain, tmp_path)
+    assert raw["specIds"] == [f"spec/{id}.lua" for id in range(80)]
+    assert raw["unsafe"] is False
+    assert raw["fallback"] == {"src/synthetic.lua": {"129": True, "3": True}}
+    lines = raw["lines"]["src/synthetic.lua"]
+    assert set(lines) == {str(line) for line in range(1, 129)}
+    for line in range(1, 129):
+        assert lines[str(line)] == [id for id in range(80) if line % 3 == 0 or id % 17 == line % 17]
+    (tmp_path / "spec").mkdir()
+    for name in raw["specIds"]:
+        (tmp_path / name).write_text("", encoding="utf-8")
+    index = _decode(raw, tmp_path, [], published=False)
+    source = tmp_path / "src" / "synthetic.lua"
+    assert index.select(source, 3) is None
+    assert index.select(source, 129) is None
+    assert index.select(source, 130) is None
+    assert index.fallback == {os.path.normcase(str(source.resolve())): {3, 129}}
+
+
+def test_streamed_publication_escapes_source_names(project, toolchain):
+    root, source = project
+    unusual = source.with_name('calc [quoted] ü.lua')
+    source.rename(unusual)
+    for spec in (root / 'spec').glob('*.lua'):
+        spec.write_text(spec.read_text(encoding='utf-8').replace("require('calc')", "require('calc [quoted] ü')"), encoding='utf-8')
+    index = collect(root, unusual)
+    assert index.select(unusual, 3) == ['spec/first_spec.lua']
+    assert index.select(unusual, 6) == ['spec/second_spec.lua']
 
 
 def test_lua_literal_handles_windows_paths_and_delimiters(project, toolchain):

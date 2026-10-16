@@ -22,6 +22,12 @@ return function(destination)
     local segment = runner.data
     runner.data = {}
     data_identity = runner.data
+    -- Share immutable packed memberships across lines with the same history.
+    -- This cache is segment-local: retaining every historical transition would
+    -- keep obsolete memberships alive for the duration of the suite.
+    local transitions = {}
+    local byte_index = active and (active // 8 + 1)
+    local bit = active and (1 << (active % 8))
     for filename, file in pairs(segment) do
       -- Match the reporter's native paths and merge aliases before saving.
       local aggregate_name = filename:gsub('^%.[/\\]', ''):gsub('[/\\]', package.config:sub(1, 1))
@@ -36,8 +42,18 @@ return function(destination)
             memberships[filename] = memberships[filename] or {}
             local lines = memberships[filename]
             local key = tostring(line)
-            lines[key] = lines[key] or {}
-            lines[key][active] = true
+            local members = lines[key] or ''
+            local byte = members:byte(byte_index) or 0
+            if byte & bit == 0 then
+              local updated = transitions[members]
+              if not updated then
+                updated = members:sub(1, byte_index - 1)
+                  .. string.rep('\0', math.max(0, byte_index - #members - 1))
+                  .. string.char(byte | bit) .. members:sub(byte_index + 1)
+                transitions[members] = updated
+              end
+              lines[key] = updated
+            end
           else
             outside[filename] = outside[filename] or {}
             outside[filename][tostring(line)] = true
@@ -99,21 +115,41 @@ return function(destination)
     closing = true
     runner.shutdown()
     stats.save(runner.configuration.statsfile, aggregate)
-    for _, lines in pairs(memberships) do
-      for line, members in pairs(lines) do
-        local ids = {}
-        for id in pairs(members) do ids[#ids + 1] = id end
-        table.sort(ids)
-        lines[line] = ids
-      end
-    end
-    local publication = {
-      version = 2, complete = true, unsafe = unsafe,
-      specIds = spec_ids, specs = specs, lines = memberships, fallback = outside,
-    }
-    local encoded = assert(json.encode(publication))
+    -- Stream the large line map rather than expanding all bitsets into Lua
+    -- arrays and retaining the entire encoded document alongside them.
     local output = assert(io.open(destination, 'wb'))
-    assert(output:write(encoded))
+    local function write(value) assert(output:write(value)) end
+    write('{"version":2,"complete":true,"unsafe":' .. tostring(unsafe))
+    write(',"specIds":' .. assert(json.encode(spec_ids)))
+    write(',"specs":' .. assert(json.encode(specs)))
+    write(',"fallback":' .. assert(json.encode(outside)) .. ',"lines":{')
+    local file_separator = ''
+    for filename, lines in pairs(memberships) do
+      write(file_separator .. assert(json.encode(filename)) .. ':{')
+      file_separator = ','
+      local line_separator = ''
+      local encoded_members = {}
+      for line, members in pairs(lines) do
+        local encoded = encoded_members[members]
+        if not encoded then
+          local ids = {}
+          for byte_index = 1, #members do
+            local byte = members:byte(byte_index)
+            for bit_index = 0, 7 do
+              if byte & (1 << bit_index) ~= 0 then
+                ids[#ids + 1] = (byte_index - 1) * 8 + bit_index
+              end
+            end
+          end
+          encoded = assert(json.encode(ids))
+          encoded_members[members] = encoded
+        end
+        write(line_separator .. assert(json.encode(line)) .. ':' .. encoded)
+        line_separator = ','
+      end
+      write('}')
+    end
+    write('}}')
     assert(output:close())
   end
 end
