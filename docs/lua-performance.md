@@ -154,9 +154,9 @@ It does not isolate the effect of fail-fast or worker count.
 ## Remaining work
 
 Remaining real-project acceptance work is tracked as qinyuanj/mutator#10 (worker
-reuse) and #11 (collector memory). Issue #12 (selected-spec timing) has a
-[completed measurement](lua-selected-specs.md), with outcome parity and no
-measured speedup against the historical interval.
+reuse). Issue #11 has a [completed memory comparison](lua-collector-memory.md).
+Issue #12 (selected-spec timing) has a [completed measurement](lua-selected-specs.md),
+with outcome parity and no measured speedup against the historical interval.
 
 A 5× end-to-end improvement has not been demonstrated. Preserve full-suite
 semantics when investigating Busted's spec loading and auto-insulation costs;
@@ -170,15 +170,18 @@ restoration validation before reuse and publication. See
 multi-file acceptance command. The measurements above predate worker reuse and
 remain a one-file reference.
 
-Profile collector memory before changing its representation again. Integer
-membership bitsets or immutable interned memberships may reduce overhead, but
-must preserve exact memberships, a stable spec-ID table and distinct fallback
-states. No memory savings from these possibilities have been measured.
+The packed-membership collector reduced real-project process peak working set
+from 1,115.10 MiB to 872.85 MiB (21.72%) in a sequential native-cluacov comparison.
+All 550 spec IDs, line memberships and fallback entries matched, and project
+inputs remained fixed. See [`lua-collector-memory.md`](lua-collector-memory.md)
+for raw measurements, dependency provenance and sampling limits. This measures
+collector memory rather than end-to-end mutation throughput.
 
 ## Validation
 
-The full regression suite after these changes passed with 193 tests and one
-skip. Collector tests exercised both pure LuaCov and native cluacov, including
+The final regression suite at `25fd639` passed with 246 tests and one skip;
+later changes add measurement reports and harness provenance checks. Collector
+tests exercised both pure LuaCov and native cluacov, including
 preloaded functions, coroutines across segment resets, explicit and tick saves,
 cache validation, malformed IDs, and aggregate coverage. Real Busted tests cover
 both directions of shared-state divergence. The final wheel build succeeded;
