@@ -9,6 +9,7 @@ import hashlib
 import json
 import subprocess
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,9 +48,10 @@ for path in sources:
     assert chosen, f"No covered sites in {path}"
     selections[path.resolve()] = chosen
 selected_ids = {site.mutation_id for sites in selections.values() for site in sites}
+checkout = Path(__file__).resolve().parents[2]
 report = {
     "project_commit": subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
-    "mutator_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+    "mutator_commit": subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip(),
     "sources": args.sources, "test_scope": "full-suite", "max_workers": args.max_workers,
     "source_sha256": {str(path.relative_to(root)): hashlib.sha256(data).hexdigest()
                       for path, data in originals.items()},
@@ -62,7 +64,8 @@ try:
         started = time.monotonic()
         results = {}
         baselines = {}
-        with WorkerPool(root, sources) as pool, patch("mutator.engine.write_results", return_value=[]), patch(
+        pool_context = WorkerPool(root, sources) if mode == "reused" else nullcontext(None)
+        with pool_context as pool, patch("mutator.engine.write_results", return_value=[]), patch(
                 "mutator.engine._select", side_effect=lambda found, *rest:
                 [site for site in found if site.mutation_id in selected_ids]):
             for path in sources:
