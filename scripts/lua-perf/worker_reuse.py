@@ -18,7 +18,7 @@ from mutator.coverage import covered_lines
 from mutator.engine import mutate_file
 from mutator.functions import sites_in_file
 from mutator.runner import CommandRunner
-from mutator.workers import WorkerPool
+from mutator.workers import WorkerPool, _worker_state
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("root", type=Path)
@@ -38,6 +38,7 @@ def snapshots():
             for path in directory.rglob("*") if path.is_file()}
 
 before = snapshots()
+project_inputs = _worker_state(root, project=True)
 selections = {}
 for path in sources:
     coverage = covered_lines(root, path, "lua")
@@ -60,6 +61,7 @@ report = {
 }
 try:
     for mode in ("per-file", "reused"):
+        assert _worker_state(root, project=True) == project_inputs, "project inputs changed"
         timings.reset()
         started = time.monotonic()
         results = {}
@@ -88,6 +90,10 @@ try:
 finally:
     assert all(path.read_bytes() == data for path, data in originals.items()), "source bytes changed"
     assert snapshots() == before, "snapshots changed"
+    assert _worker_state(root, project=True) == project_inputs, "project inputs changed"
+    end_commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    assert end_commit == report["project_commit"], "project commit changed"
+    report["project_inputs_unchanged"] = True
     report["source_bytes_unchanged"] = True
     report["snapshots_unchanged"] = True
     artifacts = Path(__file__).resolve().parents[2] / "target" / "lua-perf"
