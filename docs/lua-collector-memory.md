@@ -42,8 +42,11 @@ Collector integration tests run with both pure LuaCov and native cluacov.
 
 `scripts/lua-perf/collector_memory.py` runs the baseline collector from a fixed
 Git commit followed by the current collector. It records process peak working
-set on Windows (sampled every 20 ms), and Lua heap at segment boundaries, JSON
-encode returns and publication writes. The heap sampling does not force GC and
+set on Windows (sampled every 20 ms and queried again after process exit before
+closing its handle), and Lua heap at segment boundaries, JSON
+encode returns and publication writes. On Linux the RSS field is explicitly a
+sampled lower bound; unsupported platforms fail before launching a child, and
+zero RSS measurements fail rather than being reported as success. The heap sampling does not force GC and
 may miss allocations between sampling points; OS working set includes the
 project, Lua runtime and native modules.
 

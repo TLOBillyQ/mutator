@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 import subprocess
-import tempfile
+import sys
 import threading
 import time
 from pathlib import Path
@@ -36,14 +36,21 @@ def rss(process):
         if not function(process._handle, ctypes.byref(counters), counters.cb):
             raise ctypes.WinError()
         return counters.PeakWorkingSetSize
+    if sys.platform != 'linux':
+        raise RuntimeError(f'RSS profiling unsupported on {sys.platform}')
     try:
         rows = Path(f'/proc/{process.pid}/status').read_text().splitlines()
-        return max(int(row.split()[1]) * 1024 for row in rows if row.startswith(('VmRSS:', 'VmHWM:')))
-    except (FileNotFoundError, ValueError):
+    except FileNotFoundError:
+        # The process can exit between samples. Linux results are explicitly
+        # reported as sampled lower bounds rather than lifetime peaks.
         return 0
+    values = [int(row.split()[1]) * 1024 for row in rows if row.startswith(('VmRSS:', 'VmHWM:'))]
+    return max(values, default=0)
 
 
 def run(root, source, collector, directory, label):
+    if os.name != 'nt' and sys.platform != 'linux':
+        raise RuntimeError(f'RSS profiling unsupported on {sys.platform}')
     runners = ensure_crapper().runners
     command, cwd, _report = _plan(root, source, None)
     stats = directory / f'{label}.stats'
@@ -105,12 +112,19 @@ end
         code = process.wait()
         stop.set()
         thread.join()
-    if code or errors:
+        if os.name == 'nt':
+            # Popen retains its Windows process handle after wait(). Query the
+            # lifetime high-water mark before the handle can be closed, covering
+            # allocations after the final periodic sample.
+            peak_rss = max(peak_rss, rss(process))
+    if code or errors or peak_rss <= 0:
         raise RuntimeError(f'{label}: exit={code}, monitor={errors}, log={directory / (label + ".log")}')
     raw = json.loads(publication.read_text(encoding='utf-8'))
     result = {
         'elapsed_seconds': time.monotonic() - started,
         'peak_rss_bytes': peak_rss,
+        'rss_measurement': ('Windows lifetime PeakWorkingSetSize queried after exit'
+                            if os.name == 'nt' else 'Linux sampled VmHWM/RSS lower bound'),
         'sampled_lua_heap_peak_kib': float(heap.read_text()),
         'artifact_bytes': publication.stat().st_size,
         'specs': len(raw['specIds']),
