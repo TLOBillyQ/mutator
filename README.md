@@ -35,7 +35,9 @@ Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests
 
 Mutants of one file run at the same time. The default is one worker per core. `--max-workers` sets the cap. The run uses the smaller of that cap, the number of cores, and the number of selected sites. Files are still taken one at a time.
 
-Each worker is a directory under `target/mutation-workers`. The file being mutated is a private copy. A module that reaches that file through a relative import is copied too, so Node resolves the import to the private copy. On hosts with symlink privileges, the rest of the tree is linked. The original source stays unchanged. Workers are removed after success, setup failure, or runtime failure.
+Each worker is a directory under `target/mutation-workers`. Lua schedules
+previous survivors first to reduce a long final tail; history changes execution
+order only. The file being mutated is a private copy. A module that reaches that file through a relative import is copied too, so Node resolves the import to the private copy. On hosts with symlink privileges, the rest of the tree is linked. The original source stays unchanged. Workers are removed after success, setup failure, or runtime failure.
 
 When Windows reports missing symlink privilege (error 1314), mutator removes the partial overlay and rebuilds that worker as an isolated copy. Other filesystem errors remain visible. Copies exclude `.uml-viewer`, `.toolcache`, and the same version-control, virtualenv, build, worker, and cache directories excluded from overlays, at every depth. The worker destination is excluded even when it sits outside `target`. Copying can cost more disk space and startup time; `--max-workers` limits that cost.
 
@@ -169,7 +171,9 @@ be combined with `--select-specs`; custom `--test-command` strings are never
 rewritten. A mutant that survives its selected tests is confirmed against the
 full suite before it is recorded as survived. This catches missed downstream
 assertions, but cannot establish independent spec behavior or rule out false
-kills caused by omitted shared-state setup.
+kills caused by omitted shared-state setup. When switching between selected
+and full-suite runs, use `--mutate-all`: existing killed outcomes were measured
+under the previous scope and are otherwise retained by differential selection.
 
 Each distinct selected command must also pass on pristine source; a failing
 subset falls back to the full suite. These checks are cached for the run and
@@ -198,6 +202,9 @@ and survivor-confirmation totals, followed by the mutation run's wall time.
 Concurrent worker phase totals sum thread time and can exceed elapsed wall time.
 An unchanged selection containing only previously killed mutants skips coverage and keeps
 the existing snapshots. Survivors continue to run on each invocation.
+
+Coverage collection, measurements, and the shared-state limitation are recorded in
+[the Lua performance report](docs/lua-performance.md).
 
 For other languages, coverage is generated with crapper's commands unless
 `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report
