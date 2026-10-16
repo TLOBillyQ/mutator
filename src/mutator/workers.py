@@ -413,13 +413,17 @@ def _drain(
     file_key: str,
     plans: dict[str, tuple[Command, float]] | None,
     checked_command: Command,
+    first_site: Site | None = None,
 ) -> None:
     checked = {tuple(checked_command) if isinstance(checked_command, list) else checked_command}
     while True:
-        try:
-            site = pending.get_nowait()
-        except Empty:
-            return
+        if first_site is not None:
+            site, first_site = first_site, None
+        else:
+            try:
+                site = pending.get_nowait()
+            except Empty:
+                return
         if plans is not None:
             selected_command, selected_timeout = plans.get(site.mutation_id, (command, timeout))
             key = tuple(selected_command) if isinstance(selected_command, list) else selected_command
@@ -464,9 +468,10 @@ def _run_all(
     file_key: str,
     plans: dict[str, tuple[Command, float]] | None,
     checked_command: Command,
+    reserved: list[Site] | None = None,
 ) -> None:
     pending: Queue = Queue()
-    for site in sites:
+    for site in sites[len(reserved or []):]:
         pending.put(site)
     lock = Lock()
     with ThreadPoolExecutor(max_workers=len(directories)) as pool:
@@ -486,9 +491,11 @@ def _run_all(
                 timeout,
                 file_key,
                 plans,
-                checked_command,
+                plans.get(reserved[index].mutation_id, (command, timeout))[0]
+                if reserved is not None and plans is not None else checked_command,
+                reserved[index] if reserved is not None else None,
             )
-            for directory in directories
+            for index, directory in enumerate(directories)
         ]
         for future in futures:
             future.result()
@@ -545,15 +552,19 @@ def run_mutants(
             directories = create_workers(
                 base, root, relative, original, worker_count(len(sites), max_workers)
             )
+        reserved = sites[:len(directories)] if plans is not None else None
+        first_plans = [
+            plans.get(site.mutation_id, (command, timeout)) for site in reserved
+        ] if reserved is not None else [
+            (command if check_command is None else check_command,
+             timeout if check_timeout is None else check_timeout)
+            for _directory in directories
+        ]
         # Validate every pristine overlay before any mutation can earn a kill.
         with ThreadPoolExecutor(max_workers=len(directories)) as pool:
             checks = [
-                pool.submit(
-                    _check_worker, directory, root, cwd, runner,
-                    command if check_command is None else check_command,
-                    timeout if check_timeout is None else check_timeout,
-                )
-                for directory in directories
+                pool.submit(_check_worker, directory, root, cwd, runner, *first_plan)
+                for directory, first_plan in zip(directories, first_plans)
             ]
             for check in checks:
                 check.result()
@@ -572,6 +583,7 @@ def run_mutants(
             file_key,
             plans,
             command if check_command is None else check_command,
+            reserved,
         )
         if confirmation is not None:
             full_command, full_timeout = confirmation

@@ -1,6 +1,8 @@
 """Selected Lua specs retain full-suite safety and pristine worker validation."""
 
-from threading import Lock
+from threading import Event, Lock
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 import shutil
 
@@ -94,9 +96,11 @@ def test_each_mutant_gets_relative_specs_task_and_duration_timeout(tmp_path, mon
         tuple([*COMMAND, "--no-keep-going", "spec/double unit_spec.lua"]),
     }
     union_command = [*COMMAND, "--no-keep-going", "spec/add_spec.lua", "spec/double unit_spec.lua"]
-    checks = [call for call in runner.calls if call[3] == SOURCE and call[0] == union_command]
-    assert len(checks) == 2
-    assert all(command == union_command and timeout == 10 for command, _, timeout, _ in checks)
+    checks = [call for call in runner.calls if call[3] == SOURCE and call[2] is not None]
+    assert checks
+    assert all(call[0] != union_command for call in checks)
+    for command, _, timeout, _ in checks:
+        assert timeout == (3 if command[-1] == "spec/add_spec.lua" else 7)
     mutations = [call for call in runner.calls if call[3] != SOURCE]
     assert len(mutations) == len(result.sites)
     for command, _, timeout, text in mutations:
@@ -117,8 +121,8 @@ def test_unknown_or_empty_selection_checks_full_suite_and_uses_baseline_timeout(
     index = Index(tmp_path, {3: ["spec/add_spec.lua"], 6: unknown})
     result = mutate(source, tmp_path, runner, lua_coverage=index)
     assert not result.baseline_failed
-    checks = [call for call in runner.calls if call[3] == SOURCE and call[0] == COMMAND and call[2] is not None]
-    assert checks and all(command == COMMAND and timeout == 15 for command, _, timeout, _ in checks)
+    checks = [call for call in runner.calls if call[3] == SOURCE and call[0] == [*COMMAND, "--no-keep-going"]]
+    assert checks and all(timeout == 15 for _, _, timeout, _ in checks)
     fallback = [call for call in runner.calls if call[3].splitlines()[5] != SOURCE.splitlines()[5]]
     assert fallback and all(command == [*COMMAND, "--no-keep-going"] and timeout == 15
                             for command, _, timeout, _ in fallback)
@@ -167,7 +171,7 @@ def test_full_baseline_is_cached_across_files_with_separate_worker_checks(tmp_pa
     assert any(text == SOURCE for _, _, _, text in second.calls)
 
 
-def test_every_worker_must_pass_union_before_any_mutation(tmp_path, monkeypatch):
+def test_every_worker_must_pass_initial_plan_before_any_mutation(tmp_path, monkeypatch):
     source = project(tmp_path)
     index = Index(tmp_path)
     monkeypatch.setattr("os.cpu_count", lambda: 2)
@@ -191,6 +195,111 @@ def test_every_worker_must_pass_union_before_any_mutation(tmp_path, monkeypatch)
     assert snapshot.read_bytes() == previous
     assert source.read_text(encoding="utf-8") == SOURCE
     assert not list((tmp_path / "target" / "mutation-workers").iterdir())
+
+
+@pytest.mark.parametrize("initial_failure", [False, True])
+def test_reserved_first_plan_keeps_global_pristine_barrier(tmp_path, monkeypatch, initial_failure):
+    from mutator.functions import sites_in_file
+    from mutator.workers import WorkerBaselineError, run_mutants
+
+    source = project(tmp_path)
+    found = sites_in_file(source.read_bytes().decode("utf-8"), source, tmp_path, "src/calc.lua")
+    add = next(site for site in found if site.line == 3)
+    double = next(site for site in found if site.line == 6)
+    sites = [add, double, replace(add, mutation_id=add.mutation_id + "-repeat")]
+    add_command = [*COMMAND, "--no-keep-going", "spec/add_spec.lua"]
+    double_command = [*COMMAND, "--no-keep-going", "spec/double unit_spec.lua"]
+    plans = {site.mutation_id: (add_command if site.line == 3 else double_command,
+                               3 if site.line == 3 else 7) for site in sites}
+    entered = [Event(), Event()]
+    release = Event()
+    mutated_event = Event()
+    started = set()
+    calls = []
+    lock = Lock()
+    monkeypatch.setattr("os.cpu_count", lambda: 2)
+
+    class BarrierRunner:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            worker = int(cwd.name.removeprefix("worker-"))
+            text = (cwd / "src/calc.lua").read_text(encoding="utf-8")
+            with lock:
+                first = worker not in started
+                started.add(worker)
+                calls.append((worker, command, timeout, text))
+            if first:
+                assert text == SOURCE
+                assert command == (add_command if worker == 0 else double_command)
+                assert timeout == (3 if worker == 0 else 7)
+                entered[worker].set()
+                assert release.wait(10), "initial baseline was not released"
+                if worker == 1:
+                    assert not mutated_event.wait(.1), "mutation began before every pristine check passed"
+                return CommandResult(int(initial_failure and worker == 1), False, .01, "initial exact plan failed")
+            if text != SOURCE:
+                mutated_event.set()
+            assert all(event.is_set() for event in entered) and release.is_set()
+            return CommandResult(0, False, .01, "")
+
+    outcomes = {}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            run_mutants, tmp_path, source, source.read_bytes(), sites, 2,
+            BarrierRunner(), COMMAND, tmp_path, 15, "src/calc.lua", outcomes,
+            plans=plans, check_command=[*COMMAND, "union must not execute"], check_timeout=99,
+        )
+        try:
+            assert all(event.wait(10) for event in entered)
+            assert not future.done()
+            assert len(calls) == 2 and all(text == SOURCE for _, _, _, text in calls)
+        finally:
+            release.set()
+        if initial_failure:
+            with pytest.raises(WorkerBaselineError, match="initial exact plan failed"):
+                future.result(timeout=10)
+        else:
+            future.result(timeout=10)
+    if initial_failure:
+        assert outcomes == {}
+        assert len(calls) == 2
+    else:
+        assert set(outcomes.values()) == {"survived"}
+        for worker, expected_line in [(0, 2), (1, 5)]:
+            mutated = [call for call in calls if call[0] == worker and call[3] != SOURCE]
+            assert mutated and mutated[0][3].splitlines()[expected_line] != SOURCE.splitlines()[expected_line]
+        # Even a repeated mutation command gets only one pristine check per worker.
+        checks = [(worker, tuple(command)) for worker, command, _, text in calls if text == SOURCE]
+        assert len(checks) == len(set(checks))
+    assert source.read_text(encoding="utf-8") == SOURCE
+    assert not list((tmp_path / "target/mutation-workers").iterdir())
+
+
+def test_reserved_plan_eliminates_redundant_union_launch(tmp_path):
+    from mutator.functions import sites_in_file
+    from mutator.workers import run_mutants
+
+    source = project(tmp_path)
+    original = source.read_bytes()
+    sites = sites_in_file(original.decode("utf-8"), source, tmp_path, "src/calc.lua")
+    exact = [*COMMAND, "--no-keep-going", "spec/add_spec.lua"]
+    union = [*exact, "spec/double unit_spec.lua"]
+    runner = RecordingRunner()
+    outcomes = {}
+    run_mutants(
+        tmp_path, source, original, sites, 1, runner, COMMAND, tmp_path, 15,
+        "src/calc.lua", outcomes,
+        plans={site.mutation_id: (exact, 3) for site in sites},
+        check_command=union, check_timeout=10,
+    )
+    # One exact pristine launch, then one launch per mutant; no union launch.
+    assert len(runner.calls) == 1 + len(sites)
+    assert sum(command == union for command, _, _, _ in runner.calls) == 0
+    assert sum(text == SOURCE for _, _, _, text in runner.calls) == 1
+    assert all(command == exact and timeout == 3 for command, _, timeout, _ in runner.calls)
+    assert outcomes and set(outcomes.values()) == {"killed"}
+    assert source.read_bytes() == original
 
 
 def test_selection_does_not_run_uncovered_sites(tmp_path):
@@ -290,7 +399,7 @@ def test_failing_exact_subset_falls_back_despite_passing_union(tmp_path):
     assert set(result.statuses.values()) == {"survived"}
     pristine = [call for call in runner.calls if call[2] is None]
     assert sum(command == failed_command for command, _, _, _ in pristine) == 1
-    checks = [call for call in runner.calls if call[2] is not None and call[3] == SOURCE and call[0] == COMMAND]
+    checks = [call for call in runner.calls if call[2] is not None and call[3] == SOURCE and call[0] == [*COMMAND, "--no-keep-going"]]
     assert checks
     for command, _, timeout, text in runner.calls:
         if text.splitlines()[5] != SOURCE.splitlines()[5]:
@@ -315,9 +424,8 @@ def test_exact_pristine_duration_prevents_startup_timeout_false_kills(tmp_path):
     assert not result.baseline_failed
     assert set(result.statuses.values()) == {"survived"}
     assert all(timeout >= 25 for _, _, timeout, text in runner.calls if text != SOURCE)
-    union_command = [*COMMAND, "--no-keep-going", "spec/add_spec.lua", "spec/double unit_spec.lua"]
-    checks = [timeout for command, _, timeout, text in runner.calls if command == union_command and text == SOURCE]
-    assert checks and all(timeout >= 50 for timeout in checks)
+    checks = [timeout for _, _, timeout, text in runner.calls if timeout is not None and text == SOURCE]
+    assert checks and all(timeout >= 25 for timeout in checks)
 
 
 @pytest.mark.parametrize("change", ["remove", "add", "edit"])
