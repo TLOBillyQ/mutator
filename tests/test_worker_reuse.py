@@ -57,6 +57,29 @@ def run(root, source, runner, pool=None, command="suite", outcomes=None):
     return outcomes
 
 
+def test_real_lua_multifile_reuse_preserves_loader_binding(tmp_path):
+    from mutator.crapper_link import ensure_crapper
+    from mutator.runner import CommandRunner
+    lua = ensure_crapper().runners.lua_interpreter()
+    if lua is None:
+        pytest.skip("native Lua interpreter unavailable")
+    sources = fixture(tmp_path)
+    script = (
+        "package.path = './src/?.lua;' .. package.path; "
+        "local a,b = require('a'),require('b'); "
+        "assert((a == 1 or a == 2) and (b == 1 or b == 2))"
+    )
+    runner = CommandRunner()
+    expected = [run(tmp_path, source, runner, command=[lua, "-e", script]) for source in sources]
+    with WorkerPool(tmp_path, sources) as pool:
+        actual = [run(tmp_path, source, runner, pool, command=[lua, "-e", script]) for source in sources]
+    assert actual == expected == [
+        {"a.lua2": "survived", "a.lua3": "killed"},
+        {"b.lua2": "survived", "b.lua3": "killed"},
+    ]
+    assert all(source.read_bytes() == b"return 1\n" for source in sources)
+
+
 @pytest.mark.parametrize("copy", [False, True])
 def test_multifile_parity_and_checks_amortized(tmp_path, monkeypatch, copy):
     sources = fixture(tmp_path)
