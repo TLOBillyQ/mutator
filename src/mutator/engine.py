@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,7 +15,7 @@ from mutator.functions import form_digests, form_spans, sites_in_file
 from mutator.metrics import load_history, source_key, write_results
 from mutator.model import FormResult, RunResult, Site
 from mutator.report import format_scan
-from mutator.runner import Command, CommandRunner, display_command, test_plan
+from mutator.runner import Command, CommandRunner, display_command, run_tests, test_plan
 from mutator.workers import WorkerBaselineError, run_mutants
 from mutator.timings import measure
 
@@ -193,12 +194,17 @@ def _command_key(command: Command) -> tuple[str, ...]:
     return ("argv", *command)
 
 
+_NO_TESTS = re.compile(r"^Ran 0 tests in ", re.MULTILINE)
+
+
 def _remember_baseline(baselines, cache_key, runner, command: Command, cwd: Path) -> None:
     if cache_key in baselines:
         return
     with measure("baseline"):
-        baseline = runner.run(command, cwd, None)
-    if baseline.code != 0:
+        baseline = run_tests(runner, command, cwd, None)
+    # unittest before 3.12 exits 0 when discovery finds nothing. Every mutant
+    # would then survive a suite that tests nothing.
+    if baseline.code != 0 or _NO_TESTS.search(baseline.output):
         tail = "\n".join(baseline.output.splitlines()[-20:])
         baselines[cache_key] = (False, baseline.seconds, tail)
         return
