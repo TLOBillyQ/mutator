@@ -2,7 +2,7 @@
 
 Mutation testing for Clojure, Java, Go, TypeScript, Rust, Python, and Lua. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
 
-Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, Python, and Lua use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
+Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, Python, and Lua start with the Java decisions, spelled in that language, with the additions listed below. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
 
 A mutant is killed when the tests fail or time out. It survives when the tests still pass. A site on a line the coverage report does not hit is uncovered and is not run. The score uml-viewer paints is killed / (killed + survived).
 
@@ -110,6 +110,10 @@ Tokens inside strings, comments, and quoted Clojure forms are left alone. A repl
 | Rust | the Java set (`&&`/`||`, `!`, unary `-`). |
 | Python | the Java set, spelled `and`/`or`, `not`, and `True`/`False`. |
 | Lua | the Java set, spelled `~=`, `and`/`or`, and `not`, plus `//` to `/` only. `..` and `#` are never mutated. |
+
+Rust, TypeScript, and Python also swap binary `^` to `|`, `&`/`|`, `<<`/`>>`, and `%` to `*`; TypeScript additionally swaps `>>>` to `<<`. Compound assignments and type annotations are outside these operator rules.
+
+Return literals already use the boolean and `0`/`1` rules, including Rust tail literals. Arbitrary return expressions and whole function bodies are not replaced: syntax alone cannot establish a valid replacement type, a Rust `Default` implementation, or whether removing side effects is appropriate. A function with no supported sites retains `:sites 0` and an `n/a` score; it has no mutants to test and is not classified as untested.
 
 ## Tests and coverage
 

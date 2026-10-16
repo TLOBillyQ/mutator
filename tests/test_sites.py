@@ -1,6 +1,10 @@
 from pathlib import Path
 
+import pytest
+
+from mutator.crapper_link import ensure_crapper
 from mutator.functions import form_id, is_private, project_functions, sites_in_file
+from mutator.sites import apply_site, discover_raw
 
 
 def _sites(tmp_path: Path, relative: str, source: str):
@@ -163,3 +167,142 @@ def test_python_private_and_class_namespace(tmp_path):
 def test_string_operators_are_not_sites(tmp_path):
     source = 'def place():\n    return "x > 0 and true"\n'
     assert _sites(tmp_path, "src/demo/app.py", source) == []
+
+
+@pytest.mark.parametrize(
+    "language,path,source",
+    [
+        ("rust", "src/lib.rs", "pub fn mix(a: u64, b: u64) -> u64 {\n    ((a ^ b) & (a | b)) << ((a >> b) % b)\n}\n"),
+        ("typescript", "src/mix.ts", "export function mix(a: number, b: number) {\n  return ((a ^ b) & (a | b)) << ((a >> b) % b);\n}\n"),
+        ("python", "src/mix.py", "def mix(a, b):\n    return ((a ^ b) & (a | b)) << ((a >> b) % b)\n"),
+    ],
+)
+def test_bitwise_shift_and_remainder_sites(tmp_path, language, path, source):
+    # Exact source-order expectations independent of the implementation's table.
+    sites = _sites(tmp_path, path, source)
+    assert [(s.original, s.mutant, s.category) for s in sites] == [
+        ("^", "|", "bitwise"),
+        ("&", "|", "bitwise"),
+        ("|", "&", "bitwise"),
+        ("<<", ">>", "bitwise"),
+        (">>", "<<", "bitwise"),
+        ("%", "*", "arithmetic"),
+    ]
+    assert {s.name for s in sites} == {"mix"}
+    assert {s.line for s in sites} == {2}
+    for site in sites:
+        assert source.encode()[site.start:site.end].decode() == site.original
+        mutant = apply_site(source, site.start, site.end, site.mutant)
+        _, tree = ensure_crapper().languages.treesitter.parse(mutant, language)
+        assert not tree.root_node.has_error
+
+
+@pytest.mark.parametrize(
+    "expression,original_result,mutant_result",
+    [
+        ("6 ^ 3", 5, 7),
+        ("6 & 3", 2, 7),
+        ("6 | 3", 7, 2),
+        ("8 << 2", 32, 2),
+        ("8 >> 2", 2, 32),
+        ("8 % 3", 2, 24),
+    ],
+)
+def test_python_operator_mutants_change_observable_results(expression, original_result, mutant_result):
+    site, = discover_raw(expression, "python", "mix.py")
+    mutant = apply_site(expression, site.start, site.end, site.mutant)
+    assert eval(expression, {"__builtins__": {}}) == original_result
+    assert eval(mutant, {"__builtins__": {}}) == mutant_result
+
+
+@pytest.mark.parametrize("extension", ["ts", "tsx"])
+def test_typescript_unsigned_shift_has_a_single_site(tmp_path, extension):
+    source = "export function mix(a: number, b: number) { return a >>> b; }\n"
+    sites = _sites(tmp_path, f"src/mix.{extension}", source)
+    assert [(s.original, s.mutant, s.category) for s in sites] == [
+        (">>>", "<<", "bitwise")
+    ]
+    assert apply_site(source, sites[0].start, sites[0].end, sites[0].mutant) == (
+        "export function mix(a: number, b: number) { return a << b; }\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "language,path,source",
+    [
+        ("java", "Mix.java", "class Mix { int mix(int a, int b) { return ((a ^ b) & (a | b)) << ((a >> b) % b); } }"),
+        ("go", "mix.go", "package mix\nfunc Mix(a int, b int) int { return ((a ^ b) & (a | b)) << ((a >> b) % b) }"),
+        ("lua", "mix.lua", "function mix(a, b) return ((a ~ b) & (a | b)) << ((a >> b) % b) end"),
+        ("clojure", "mix.clj", "(ns mix)\n(defn mix [a b] (bit-xor (bit-and a b) (bit-or a b)))"),
+    ],
+)
+def test_new_swaps_do_not_expand_other_language_rules(language, path, source):
+    assert discover_raw(source, language, path) == []
+
+
+@pytest.mark.parametrize(
+    "language,path,source",
+    [
+        ("rust", "mix.rs", 'fn mix(mut a: u64, b: u64) { let s = "^ & | << >> %"; /* ^ & | << >> % */ a ^= b; a &= b; a |= b; a <<= b; a >>= b; a %= b; }'),
+        ("typescript", "mix.ts", 'function mix(a: number, b: number) { const s = "^ & | << >> %"; /* ^ & | << >> % */ a ^= b; a &= b; a |= b; a <<= b; a >>= b; a %= b; }'),
+        ("python", "mix.py", 'def mix(a, b):\n    s = "^ & | << >> %"\n    # ^ & | << >> %\n    a ^= b\n    a &= b\n    a |= b\n    a <<= b\n    a >>= b\n    a %= b\n'),
+    ],
+)
+def test_new_swaps_only_apply_to_binary_expressions(language, path, source):
+    assert discover_raw(source, language, path) == []
+
+
+@pytest.mark.parametrize(
+    "language,path,source",
+    [
+        ("python", "mix.py", "def identity(x: int | None) -> int | None:\n    y: int | None = x\n    return y\n"),
+        ("rust", "mix.rs", "pub fn borrow(x: &Vec<Vec<u64>>) -> &Vec<Vec<u64>> { &*x }\n"),
+        ("typescript", "mix.ts", "export function identity(x: number | null): number | null { return x; }\n"),
+    ],
+)
+def test_type_unions_references_and_nested_generics_are_not_bitwise_sites(language, path, source):
+    _, tree = ensure_crapper().languages.treesitter.parse(source, language)
+    assert not tree.root_node.has_error
+    assert discover_raw(source, language, path) == []
+
+
+def test_python_union_annotation_does_not_hide_runtime_bitwise_site(tmp_path):
+    source = "def mask(x: int | None, y: int) -> int | None:\n    return x | y\n"
+    sites = _sites(tmp_path, "src/mix.py", source)
+    assert [(s.original, s.mutant, s.line) for s in sites] == [("|", "&", 2)]
+
+
+def test_new_operator_offsets_are_utf8_bytes(tmp_path):
+    source = 'def mask(a, b):\n    label = "雪"\n    return a ^ b\n'
+    site, = _sites(tmp_path, "src/mix.py", source)
+    assert apply_site(source, site.start, site.end, site.mutant) == (
+        'def mask(a, b):\n    label = "雪"\n    return a | b\n'
+    )
+
+
+@pytest.mark.parametrize(
+    "path,source,expected",
+    [
+        ("src/lib.rs", "pub fn zero() -> i32 { return 0; }\npub fn one() -> i32 { 1 }\npub fn yes() -> bool { true }\npub fn no() -> bool { return false; }\n", [("0", "1"), ("1", "0"), ("true", "false"), ("false", "true")]),
+        ("src/mix.ts", "export function zero() { return 0; }\nexport function one() { return 1; }\nexport function yes() { return true; }\nexport function no() { return false; }\n", [("0", "1"), ("1", "0"), ("true", "false"), ("false", "true")]),
+        ("src/mix.py", "def zero():\n    return 0\ndef one():\n    return 1\ndef yes():\n    return True\ndef no():\n    return False\n", [("0", "1"), ("1", "0"), ("True", "False"), ("False", "True")]),
+    ],
+)
+def test_literal_returns_use_existing_sites_without_body_replacement(tmp_path, path, source, expected):
+    sites = _sites(tmp_path, path, source)
+    assert [(s.original, s.mutant) for s in sites] == expected
+    assert [s.name for s in sites] == ["zero", "one", "yes", "no"]
+
+
+@pytest.mark.parametrize(
+    "path,source",
+    [
+        ("src/lib.rs", "pub fn identity<T>(x: T) -> T { x }\n"),
+        ("src/mix.ts", "export function identity<T>(x: T): T { return x; }\n"),
+        ("src/mix.py", "def identity(x):\n    return x\n"),
+    ],
+)
+def test_zero_site_functions_are_discovered_without_inventing_returns(tmp_path, path, source):
+    assert _sites(tmp_path, path, source) == []
+    functions = project_functions(source, tmp_path / path, tmp_path)
+    assert [fn.name for fn in functions] == ["identity"]

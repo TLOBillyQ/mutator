@@ -2,7 +2,7 @@
 
 Clojure follows clj-mutate's symbol rules. Go follows mutate4go, including
 one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, and Python
-use the same decisions as Java, spelled in that language. Lua spells
+extend Java's decisions with bitwise, shift, and remainder swaps. Lua spells
 inequality `~=`, mutates `//` one way to `/`, and leaves `..` and `#` alone.
 """
 
@@ -28,6 +28,8 @@ _BINARY = {
     "and": "or",
     "or": "and",
 }
+
+_BITWISE_BINARY = {"^": "|", "&": "|", "|": "&", "<<": ">>", ">>": "<<", "%": "*"}
 
 _LUA_BINARY = {**_BINARY, "==": "~=", "~=": "==", "//": "/"}
 
@@ -121,6 +123,8 @@ def _category(token: str) -> str:
         return "comparison"
     if token in {"==", "!=", "===", "!==", "~="}:
         return "equality"
+    if token in {"^", "&", "|", "<<", ">>", ">>>"}:
+        return "bitwise"
     if token in {"&&", "||", "and", "or"}:
         return "logical"
     return "arithmetic"
@@ -131,6 +135,10 @@ def _binary_mutant(language: str, token: str) -> str | None:
         return None
     if language == "lua":
         return _LUA_BINARY.get(token)
+    if language == "typescript" and token == ">>>":
+        return "<<"
+    if language in {"rust", "typescript", "python"} and token in _BITWISE_BINARY:
+        return _BITWISE_BINARY[token]
     return _BINARY.get(token)
 
 
@@ -212,6 +220,15 @@ def _visit_clojure(node, data: bytes, found: list[RawSite]) -> None:
         _visit_clojure(child, data, found)
 
 
+def _python_annotation(node) -> bool:
+    current = node.parent
+    while current is not None:
+        if current.type == "type":
+            return True
+        current = current.parent
+    return False
+
+
 def _visit(node, data: bytes, language: str, found: list[RawSite]) -> None:
     parent = node.parent.type if node.parent is not None else ""
     if node.child_count == 0:
@@ -220,6 +237,9 @@ def _visit(node, data: bytes, language: str, found: list[RawSite]) -> None:
         # checks are independent. `0` is a child of `a > 0`, not an operator.
         if parent in _BINARY_PARENTS:
             mutant = _binary_mutant(language, token)
+            # Python spells union annotations with the same binary AST as `a | b`.
+            if language == "python" and token in _BITWISE_BINARY and _python_annotation(node):
+                mutant = None
             if mutant is not None:
                 _add(found, node, token, mutant, _category(token))
         if token in {"!", "not"} and parent in _UNARY_PARENTS | {"comparison_operator"}:
