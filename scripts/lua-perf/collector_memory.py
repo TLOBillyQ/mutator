@@ -180,6 +180,7 @@ def main():
     assert source_hash == source_after, 'Source bytes changed during benchmark'
     report = {'project_commit': initial_state['head'],
               'project_states': {'before': initial_state, 'between': between_state, 'after': final_state},
+              'project_state_unchanged': initial_state == between_state == final_state,
               'tracked_inputs_unchanged': initial_state['tracked_content_sha256'] == between_state['tracked_content_sha256'] == final_state['tracked_content_sha256'],
               'source': args.source, 'source_sha256': source_hash, 'source_unchanged': True,
               'native_probe': native_probe,
@@ -189,6 +190,7 @@ def main():
               'environment': {name: os.environ.get(name) for name in ('LUA_PATH', 'LUA_CPATH')}}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+    assert report['project_state_unchanged'], 'Project revision, diff or tracked content changed during benchmark'
     assert report['tracked_inputs_unchanged'], 'Tracked project inputs changed during benchmark'
     assert all(parity.values()), parity
     assert not first['unsafe'] and not second['unsafe']

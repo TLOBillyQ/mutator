@@ -55,3 +55,44 @@ Both runs use private helper, stats, configuration, JSON and log files under
 The harness verifies source bytes before and after, probes native cluacov when
 requested, and compares all raw memberships, fallback entries and spec IDs.
 Run it only after other scheduled memory-heavy benchmarks have finished.
+
+## Real Monopoly comparison
+
+The sequential native-cluacov comparison completed successfully on a detached
+Monopoly worktree pinned to `cdb605398d0ce73862959bc1376503ab01e14925`, using
+baseline collector `adc4d34` and the packed/streamed candidate from `777908e`.
+Raw measurements and exact environment paths are recorded in
+[`lua-performance/collector-memory-result.json`](lua-performance/collector-memory-result.json).
+
+| Measurement | Baseline | Candidate | Reduction |
+| --- | ---: | ---: | ---: |
+| Process lifetime peak working set (MiB) | 1,115.10 | 872.85 | 21.72% |
+| Sampled Lua heap peak (KiB) | 831,537.33 | 733,785.67 | 11.76% |
+| Instrumented collection elapsed (s) | 119.625 | 112.781 | 5.72% |
+
+All 550 spec IDs, exact line memberships and fallback entries matched; both
+publications were complete and safe. Source bytes, project HEAD, tracked file
+content and Git diff hashes matched before, between and after both runs. The
+full-state equality check was validated against the captured report after the
+run, then added as an explicit harness assertion. Spec durations vary normally;
+this also explains the small difference in JSON byte counts.
+
+The isolated checkout used a copied experimental snapshot of the main project's
+`.toolcache`, stored as real directories. Both runs used that same dependency
+snapshot, including cluacov 1.0.0, without installing or bootstrapping dependencies
+during measurement. This is experimental provenance, not a recommendation for
+ordinary Monopoly worktree setup. No Monopoly instructions or main-checkout
+source/snapshots were changed. The measurement did not overlap the scheduled
+#12 benchmark; unrelated machine activity was not controlled.
+
+The remaining 873 MiB process peak includes the project and test environment;
+this change reduces collector overhead but does not establish a bound on
+whole-project memory. The elapsed comparison is one instrumented sequential
+pair, not an end-to-end mutation performance claim. Heap peaks are sampled;
+Windows RSS is the lifetime high-water mark queried after process exit.
+
+Private raw JSON, stats, configuration, heap measurements and logs remain under
+`target/lua-perf/collector-memory/` in the profiling checkout. The harness does
+not generate LCOV or a normal reusable published index; consumers requiring
+coverage reuse must perform the normal collection/publication step first.
+
